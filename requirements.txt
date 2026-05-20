@@ -1,0 +1,10 @@
+playwright
+beautifulsoup4
+lxml
+fastapi
+uvicorn
+openai
+loguru
+chromadb
+pydantic
+python-dotenv
