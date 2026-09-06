@@ -299,6 +299,8 @@ class ReasoningAgent:
                     action = self.recovery_policy.from_loop()
 
                 last_result = await self._execute_with_recovery(executor, action, state)
+                self.memory.add_result(last_result)
+                self.memory.save_state()
                 last_action = action
                 await self._record_result(last_result, iterations)
 

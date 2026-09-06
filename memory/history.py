@@ -3,11 +3,13 @@ import json
 import os
 import chromadb
 from models.action_models import AgentAction
+from models.orchestration_models import ActionResult
 from loguru import logger
 
 class MemoryState:
     def __init__(self, persist_dir: str = "./memory_db"):
         self.actions_history: List[AgentAction] = []
+        self.results_history: List[ActionResult] = []
         self.visited_urls: List[str] = []
         self.extracted_data: Dict[str, Any] = {}
         self.persist_dir = persist_dir
@@ -18,6 +20,9 @@ class MemoryState:
         self.collection = self.chroma_client.get_or_create_collection(name="agent_history")
     def add_action(self, action: AgentAction):
         self.actions_history.append(action)
+
+    def add_result(self, result: ActionResult):
+        self.results_history.append(result)
         
     def add_url(self, url: str):
         if not self.visited_urls or self.visited_urls[-1] != url:
@@ -30,6 +35,7 @@ class MemoryState:
     def save_state(self):
         state = {
             "actions": [a.model_dump() for a in self.actions_history],
+            "results": [r.model_dump() for r in self.results_history],
             "visited_urls": self.visited_urls,
             "extracted_data": self.extracted_data
         }
@@ -71,6 +77,13 @@ class MemoryState:
         history_strs = [f"- {a.action} on {a.target} (Reason: {a.reasoning})" for a in recent_actions]
         
         context = "Recent Actions Taken:\n" + ("\n".join(history_strs) if history_strs else "None")
+        recent_results = self.results_history[-3:]
+        if recent_results:
+            result_strs = [
+                f"- {r.action} success={r.success} target={r.target} error={r.error} url={r.url_after}"
+                for r in recent_results
+            ]
+            context += "\n\nRecent Action Results:\n" + "\n".join(result_strs)
         if self.extracted_data:
             context += f"\n\nExtracted Data So Far:\n{self.extracted_data}"
         return context
