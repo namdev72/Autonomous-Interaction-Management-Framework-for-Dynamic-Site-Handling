@@ -101,8 +101,8 @@ class NavigationGraph:
                 ON CONFLICT(from_page, to_page, action, target_descriptor, value)
                 DO UPDATE SET times_seen = times_seen + 1,
                               last_seen  = excluded.last_seen,
-                              evidence   = excluded.evidence,
-                              run_id     = excluded.run_id
+                              evidence   = COALESCE(excluded.evidence, evidence),
+                              run_id     = COALESCE(excluded.run_id, run_id)
                 """,
                 (from_page, to_page, action, target_descriptor or "", value or "",
                  evidence, run_id, now, now),
