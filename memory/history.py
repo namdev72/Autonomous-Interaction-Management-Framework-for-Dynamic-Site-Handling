@@ -1,24 +1,35 @@
 from typing import List, Dict, Any, Optional
+import hashlib
 import json
 import os
 import time
+import uuid
 import chromadb
 from models.action_models import AgentAction
 from models.orchestration_models import ActionResult
 from loguru import logger
 
+DEFAULT_MEMORY_DIR = os.path.join(".", "memory_db")
+
+# Bounded retry for Chroma writes. Hard cap: never block the agent on a lock.
+CHROMA_WRITE_ATTEMPTS = 3
+CHROMA_WRITE_BACKOFF_BASE = 0.05  # seconds; doubles per retry -> 50ms, 100ms
+
 class MemoryState:
-    def __init__(self, persist_dir: str = None):
+    def __init__(self, persist_dir: str = None, run_id: str = None):
         self.actions_history: List[AgentAction] = []
         self.results_history: List[ActionResult] = []
         self.visited_urls: List[str] = []
         self.extracted_data: Dict[str, Any] = {}
-        base_dir = persist_dir or os.path.join(".", "memory_db", "sessions", str(int(time.time())))
-        self.persist_dir = base_dir
+        # The vector store is durable and shared across runs; only per-run
+        # artifacts (state.json) are namespaced under runs/<run_id>.
+        self.persist_dir = persist_dir or DEFAULT_MEMORY_DIR
+        self.run_id = run_id or f"{int(time.time())}-{uuid.uuid4().hex[:8]}"
+        self.run_dir = os.path.join(self.persist_dir, "runs", self.run_id)
         self.chroma_client = None
         self.collection = None
-        
-        os.makedirs(self.persist_dir, exist_ok=True)
+
+        os.makedirs(self.run_dir, exist_ok=True)
         try:
             self.chroma_client = chromadb.PersistentClient(path=self.persist_dir)
             self.collection = self.chroma_client.get_or_create_collection(name="agent_history")
@@ -41,26 +52,70 @@ class MemoryState:
         
     def save_state(self):
         state = {
+            "run_id": self.run_id,
             "actions": [a.model_dump() for a in self.actions_history],
             "results": [r.model_dump() for r in self.results_history],
             "visited_urls": self.visited_urls,
             "extracted_data": self.extracted_data
         }
-        with open(os.path.join(self.persist_dir, "state.json"), "w") as f:
+        with open(os.path.join(self.run_dir, "state.json"), "w") as f:
             json.dump(state, f, indent=4)
 
-    def index_page_content(self, url: str, content: str):
+    def _chroma_write(self, description: str, write) -> bool:
+        """
+        Run a Chroma write with a small bounded retry, then degrade loudly.
+
+        The shared store is single-writer, so a concurrent run can hold the lock
+        for a moment. Retrying briefly rides that out. Interim measure only:
+        real multi-user concurrency needs server-mode Chroma or Qdrant, not this.
+        """
+        last_error = None
+        for attempt in range(1, CHROMA_WRITE_ATTEMPTS + 1):
+            try:
+                write()
+                return True
+            except Exception as e:
+                last_error = e
+                if attempt < CHROMA_WRITE_ATTEMPTS:
+                    delay = CHROMA_WRITE_BACKOFF_BASE * (2 ** (attempt - 1))
+                    logger.debug(
+                        f"Chroma {description} failed on attempt {attempt}/{CHROMA_WRITE_ATTEMPTS}; "
+                        f"retrying in {delay:.2f}s: {e}"
+                    )
+                    time.sleep(delay)
+
+        logger.warning(
+            f"Chroma {description} failed after {CHROMA_WRITE_ATTEMPTS} retries, "
+            f"using in-process fallback; this write will not persist: {last_error}"
+        )
+        return False
+
+    @staticmethod
+    def page_doc_id(url: str, content: str) -> str:
+        """
+        Content-addressed id for an indexed page.
+
+        Keyed on the page itself rather than on a per-run counter, so the same
+        page re-visited in a later run updates one document instead of
+        colliding with an unrelated one.
+        """
+        digest = hashlib.sha256(f"{url}\n{content}".encode("utf-8")).hexdigest()
+        return f"page_{digest[:32]}"
+
+    def index_page_content(self, url: str, content: str) -> bool:
         if not self.collection:
-            return
-        try:
-            doc_id = f"page_{len(self.visited_urls)}"
-            self.collection.upsert(
+            return False
+
+        doc_id = self.page_doc_id(url, content)
+        metadata = {"url": url, "run_id": self.run_id, "indexed_at": int(time.time())}
+        return self._chroma_write(
+            f"page index for {url}",
+            lambda: self.collection.upsert(
                 documents=[content],
-                metadatas=[{"url": url}],
+                metadatas=[metadata],
                 ids=[doc_id]
             )
-        except Exception as e:
-            logger.warning(f"Failed to index page content in vector memory: {e}")
+        )
 
     def semantic_search(self, query: str, n_results: int = 1) -> List[str]:
         if not self.collection:
