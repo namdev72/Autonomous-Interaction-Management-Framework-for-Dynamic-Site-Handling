@@ -1,11 +1,11 @@
 from typing import List, Dict, Any, Optional
-import hashlib
 import json
 import os
 import time
 import uuid
 import chromadb
 from pydantic import BaseModel
+from memory.signature import page_key
 from models.action_models import AgentAction
 from models.orchestration_models import ActionResult
 from loguru import logger
@@ -115,23 +115,18 @@ class MemoryState:
         )
         return False
 
-    @staticmethod
-    def page_doc_id(url: str, content: str) -> str:
+    def index_page_content(self, url: str, content: str, key: str = None) -> bool:
         """
-        Content-addressed id for an indexed page.
+        Index one page. Keyed by page identity, so revisiting a page updates
+        its document instead of adding a near-duplicate per scroll position.
 
-        Keyed on the page itself rather than on a per-run counter, so the same
-        page re-visited in a later run updates one document instead of
-        colliding with an unrelated one.
+        Callers that already computed the key pass it in, so a run computes it
+        once; otherwise it is derived from the URL here.
         """
-        digest = hashlib.sha256(f"{url}\n{content}".encode("utf-8")).hexdigest()
-        return f"page_{digest[:32]}"
-
-    def index_page_content(self, url: str, content: str) -> bool:
         if not self.collection:
             return False
 
-        doc_id = self.page_doc_id(url, content)
+        doc_id = key or page_key(url)
         metadata = {"url": url, "run_id": self.run_id, "indexed_at": int(time.time())}
         return self._chroma_write(
             f"page index for {url}",

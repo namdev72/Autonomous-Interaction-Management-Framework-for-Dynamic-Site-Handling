@@ -15,6 +15,7 @@ from context.context_builder import ContextBuilder
 from llm.intent_parser import IntentParser
 from llm.llm_client import LLMClient
 from memory.history import MemoryState, StepRecord
+from memory.signature import page_key, view_signature
 from models.action_models import AgentAction
 from models.orchestration_models import ActionResult, AgentRunResult, AgentState, StepDecision
 
@@ -141,8 +142,14 @@ class ReasoningAgent:
         current_url = self.browser_controller.page.url
         self.memory.add_url(current_url)
 
+        # Computed once per iteration and carried on the state: page identity
+        # for storage keys, viewport signature for detecting that a step
+        # changed something.
+        current_page_key = page_key(current_url)
+        current_view_signature = view_signature(current_url, elements)
+
         page_context = self.context_builder.build_context(current_url, elements)
-        self.memory.index_page_content(current_url, page_context)
+        self.memory.index_page_content(current_url, page_context, current_page_key)
         memory_context = self.memory.get_context_string()
         semantic_memory = self.memory.semantic_search(user_query, n_results=2)
 
@@ -150,6 +157,8 @@ class ReasoningAgent:
             user_query=user_query,
             iteration=iteration,
             current_url=current_url,
+            page_key=current_page_key,
+            view_signature=current_view_signature,
             page_context=page_context,
             memory_context=memory_context,
             semantic_memory=semantic_memory,

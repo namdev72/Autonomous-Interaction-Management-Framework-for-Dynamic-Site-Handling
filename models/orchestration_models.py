@@ -27,6 +27,8 @@ class AgentState(BaseModel):
     user_query: str
     iteration: int
     current_url: str
+    page_key: Optional[str] = None
+    view_signature: Optional[str] = None
     page_context: str
     memory_context: str
     semantic_memory: List[str] = Field(default_factory=list)
