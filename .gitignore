@@ -123,6 +123,7 @@ playwright/.local-browsers/
 # Database / Vector db (e.g. Chroma)
 chroma/
 chroma_data/
+memory_db/
 
 # Artifacts/Screenshots
 screenshot.png
