@@ -62,6 +62,12 @@ class BrowserExecutor:
             elif action.action == "back":
                 await self.page.go_back(wait_until="load")
                 return self._result(action, True, url_before=url_before)
+
+            elif action.action == "scroll" and not action.target:
+                direction = (action.value or "down").lower()
+                delta = -600 if direction in {"up", "top"} else 600
+                await self.page.mouse.wheel(0, delta)
+                return self._result(action, True, url_before=url_before, metadata={"direction": direction})
                 
             # For actions that require a target
             if not action.target:
