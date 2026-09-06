@@ -1,90 +1,100 @@
 # Autonomous Web Browser Agent Framework
 
-An intelligent, autonomous web agent framework that translates natural language instructions into concrete browser actions. Built with Python, Playwright, and powered by Groq LLMs, this framework enables agents to navigate, scrape, and interact with dynamic websites intelligently.
+An autonomous browser-agent framework that translates natural language instructions into concrete browser actions. It uses Python, Playwright, Groq-compatible OpenAI APIs, structured memory, and an explicit orchestration loop for dynamic site handling.
 
-## 🚀 Features
+## Features
 
-- **Natural Language Task Execution**: Give the agent tasks like *"go to books.toscrape.com and extract the price of a light in the attic"* and it handles the rest.
-- **Headful or Headless Browsing**: Watch the agent work in real-time or run it silently in the background.
-- **Intelligent DOM Extraction**: Automatically identifies and targets interactive elements in the DOM using an injected Playwright ID system.
-- **Memory & History Tracking**: Keeps a history of past actions to avoid repetitive loops and maintain context during long tasks.
-- **Groq LLM Integration**: Uses lightning-fast Groq models (defaults to `llama-3.3-70b-versatile`) for reasoning and deciding the next browser action.
+- Natural language task execution through a CLI entry point.
+- Headful or headless Chromium browsing with Playwright.
+- Viewport-focused DOM extraction with injected `data-playwright-id` targets.
+- Shadow DOM and iframe-aware element extraction.
+- Structured action execution results with URL, error, recovery hint, screenshot, and extracted value fields.
+- Deterministic recovery policy for failed actions and repeated loops.
+- Verified completion: `done` actions are checked against the original user goal before stopping.
+- Semantic memory indexing with ChromaDB for current-session page context recall.
+- Optional vision fallback for coordinate-based click recovery.
 
-## 🛠️ Technology Stack
+## Architecture
 
-- **Python 3.8+**
-- **Playwright**: For robust and reliable browser automation.
-- **Groq API**: High-speed inference using LLaMA models.
-- **Loguru**: Clean, colorful, and rotating execution logs.
-- **Pydantic**: Structured action models and validation.
-- **BeautifulSoup4 & LXML**: For HTML parsing and DOM manipulation.
-
-## 📁 Folder Structure
-
-```
-├── agents/             # Core reasoning logic (e.g., ReasoningAgent)
-├── browser/            # Playwright interaction layers (actions, DOM extraction, controllers)
-├── context/            # Constructs structural and visual context of the page for the LLM
-├── llm/                # LLM client configuration, prompting, and intent parsing
-├── memory/             # Action history tracking to maintain state and avoid loops
-├── models/             # Pydantic schemas representing structured actions
-├── main.py             # CLI entry point for the framework
-└── requirements.txt    # Project dependencies
+```text
+main.py
+  -> agents.reasoning_agent.ReasoningAgent
+    -> llm.intent_parser.IntentParser
+    -> browser.controller.BrowserController
+    -> browser.dom_extractor.DOMExtractor
+    -> context.context_builder.ContextBuilder
+    -> llm.llm_client.LLMClient
+    -> browser.actions.BrowserExecutor
+    -> agents.recovery_policy.RecoveryPolicy
+    -> agents.goal_verifier.GoalVerifier
+    -> memory.history.MemoryState
 ```
 
-## ⚙️ Prerequisites
+The agent loop runs as:
 
-1. **Python 3.8 or higher** installed on your system.
-2. A **Groq API Key** (You can obtain one from the [Groq Console](https://console.groq.com)).
+1. Parse the user intent and resolve a starting URL.
+2. Open the browser and wait for initial page load.
+3. Extract visible interactive elements from the page and frames.
+4. Build compact context for the LLM.
+5. Add recent actions, action results, extracted data, and semantic memory.
+6. Ask the LLM for the next structured `AgentAction`.
+7. Verify completion if the action is `done`.
+8. Execute the action through Playwright.
+9. Apply deterministic recovery or vision fallback if execution fails.
+10. Persist action/result memory and repeat until verified completion or max iterations.
 
-## 📦 Installation
+## Installation
 
-1. **Navigate to the project directory**:
-   ```bash
-   cd Autonomous-Interaction-Management-Framework-for-Dynamic-Site-Handling
-   ```
+```bash
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+playwright install
+```
 
-2. **Create and activate a virtual environment (Recommended)**:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On macOS/Linux
-   # .\venv\Scripts\activate # On Windows
-   ```
+Create a `.env` file in the project root:
 
-3. **Install Python dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
+```env
+GROQ_API_KEY=your_groq_api_key_here
+MODEL_NAME=llama-3.3-70b-versatile
+```
 
-4. **Install Playwright browsers**:
-   ```bash
-   playwright install
-   ```
+## Usage
 
-5. **Configure Environment Variables**:
-   Create a `.env` file in the root directory and add your Groq API key:
-   ```env
-   GROQ_API_KEY=your_groq_api_key_here
-   MODEL_NAME=llama-3.3-70b-versatile   # Optional, this is the default
-   ```
-
-## 🚀 Usage
-
-You can run the agent in two modes using the `main.py` entry point.
-
-### Interactive CLI Mode
-If you run the script without any arguments, it will launch an interactive prompt where you can enter your task:
+Interactive mode:
 
 ```bash
 python main.py
 ```
 
-### Single Command Mode
-You can pass your task directly as command-line arguments:
+Single task:
 
 ```bash
-python main.py "open amazon website and search for iphone 16"
+python main.py "go to books.toscrape.com and extract the price of a light in the attic"
 ```
 
-## 📜 Logging
-The framework utilizes `loguru` for extensive logging. All execution logs and agent reasoning steps are printed to the console and automatically saved to `execution_history.log` (rotates at 10 MB) in the project root.
+Useful runtime flags:
+
+```bash
+python main.py --headless --max-iterations 20 --model llama-3.3-70b-versatile "open wikipedia and search for Samsung"
+```
+
+## Tests
+
+Run deterministic orchestration tests:
+
+```bash
+python -m unittest test_orchestration.py
+```
+
+Run a syntax compile pass:
+
+```bash
+python -m compileall agents browser context llm memory models main.py test_orchestration.py
+```
+
+## Notes
+
+- Runtime memory is written to `memory_db/` and ignored by Git.
+- Screenshots are written to `screenshots/`.
+- Full browser runs require a valid `GROQ_API_KEY`.
