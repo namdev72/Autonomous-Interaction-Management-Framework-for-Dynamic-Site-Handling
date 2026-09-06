@@ -248,6 +248,10 @@ class ReasoningAgent:
         iterations = 0
 
         try:
+            if not self.llm_client.is_configured:
+                await self._emit_log("GROQ_API_KEY is not configured. Add it to .env before running the agent.", "error")
+                return AgentRunResult(completed=False, iterations=0, reason="missing_api_key")
+
             intent = await self.intent_parser.parse(user_query)
             await self._emit_log(f"Parsed Intent: {intent.model_dump_json()}")
 

@@ -14,14 +14,17 @@ class LLMClient:
         self.api_key = os.getenv("GROQ_API_KEY")
         self.model_name = model_name or os.getenv("MODEL_NAME", "llama-3.3-70b-versatile")
         self.max_retries = max_retries
+        self.client = None
         
         if not self.api_key:
             logger.warning("GROQ_API_KEY not found in environment.")
-            
-        self.client = AsyncOpenAI(
-            api_key=self.api_key,
-            base_url="https://api.groq.com/openai/v1"
-        )
+            return
+
+        self.client = AsyncOpenAI(api_key=self.api_key, base_url="https://api.groq.com/openai/v1")
+
+    @property
+    def is_configured(self) -> bool:
+        return self.client is not None
 
     async def _chat_completion_with_retry(self, **kwargs):
         last_error = None
@@ -43,6 +46,9 @@ class LLMClient:
         If a response_model is provided, the LLM is instructed to match its schema.
         """
         logger.info(f"Generating JSON with Groq LLM (Model: {self.model_name})...")
+        if not self.is_configured:
+            logger.error("Cannot generate JSON because GROQ_API_KEY is not configured.")
+            return {}
         
         try:
             response = await self._chat_completion_with_retry(
@@ -69,6 +75,9 @@ class LLMClient:
         Sends a screenshot to the Vision LLM (llama-3.2-90b-vision-preview) and requests JSON response.
         """
         logger.info("Generating Vision fallback coordinates with Groq Vision...")
+        if not self.is_configured:
+            logger.error("Cannot generate vision JSON because GROQ_API_KEY is not configured.")
+            return {}
         
         try:
             with open(image_path, "rb") as image_file:
