@@ -278,6 +278,14 @@ class TargetDescriptorTests(unittest.TestCase):
         self.assertIsNone(descriptor_for_target("pw-id-99", self.ELEMENTS))
         self.assertIsNone(descriptor_for_target("pw-id-0", []))
 
+    def test_ambiguous_target_descriptor_is_not_remembered(self):
+        elements = [
+            {"playwright_index": "pw-id-1", "tag": "a", "text": "Vote"},
+            {"playwright_index": "pw-id-2", "tag": "a", "text": "Vote"},
+        ]
+
+        self.assertIsNone(descriptor_for_target("pw-id-2", elements))
+
 
 class VerifiedActionIdTests(unittest.TestCase):
     def test_same_action_for_same_goal_reinforces_one_entry(self):
@@ -385,6 +393,15 @@ class RecallResolutionTests(unittest.TestCase):
         descriptor = descriptor_for_target("pw-id-3", [self.SEARCH])
 
         self.assertEqual(target_for_descriptor(descriptor, [self.SEARCH]), "pw-id-3")
+
+    def test_ambiguous_descriptor_does_not_guess_a_live_target(self):
+        descriptor = element_descriptor({"tag": "a", "text": "Vote"})
+        elements = [
+            {"playwright_index": "pw-id-1", "tag": "a", "text": "Vote"},
+            {"playwright_index": "pw-id-2", "tag": "a", "text": "Vote"},
+        ]
+
+        self.assertIsNone(target_for_descriptor(descriptor, elements))
 
 
 class MemoryRecallContextTests(unittest.TestCase):

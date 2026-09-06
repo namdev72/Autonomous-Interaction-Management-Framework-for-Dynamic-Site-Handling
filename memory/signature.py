@@ -140,13 +140,24 @@ def descriptor_for_target(target: Optional[str], elements: Iterable[Dict[str, An
     Returns None when the action had no target (a page-level scroll) or the
     target is no longer in the extracted set.
     """
-    if not target or not elements:
+    if not target:
+        return None
+    elements = list(elements)
+    if not elements:
         return None
 
-    for element in elements:
-        if element.get("playwright_index") == target:
-            return element_descriptor(element) or None
-    return None
+    matches = [element for element in elements if element.get("playwright_index") == target]
+    if len(matches) != 1:
+        return None
+
+    descriptor = element_descriptor(matches[0])
+    if not descriptor:
+        return None
+
+    if sum(element_descriptor(element) == descriptor for element in elements) != 1:
+        return None
+
+    return descriptor
 
 
 def target_for_descriptor(descriptor: Optional[str], elements: Iterable[Dict[str, Any]]) -> Optional[str]:
@@ -160,13 +171,16 @@ def target_for_descriptor(descriptor: Optional[str], elements: Iterable[Dict[str
     Returns None when the remembered element is not in the current viewport,
     which is a normal outcome, not an error -- it may need scrolling to.
     """
-    if not descriptor or not elements:
+    if not descriptor:
+        return None
+    elements = list(elements)
+    if not elements:
         return None
 
-    for element in elements:
-        if element_descriptor(element) == descriptor:
-            return element.get("playwright_index")
-    return None
+    matches = [element for element in elements if element_descriptor(element) == descriptor]
+    if len(matches) != 1:
+        return None
+    return matches[0].get("playwright_index")
 
 
 def view_signature(url: str, elements: Iterable[Dict[str, Any]]) -> str:
