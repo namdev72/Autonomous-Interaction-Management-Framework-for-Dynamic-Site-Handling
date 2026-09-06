@@ -9,9 +9,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class LLMClient:
-    def __init__(self):
+    def __init__(self, model_name: str = None):
         self.api_key = os.getenv("GROQ_API_KEY")
-        self.model_name = os.getenv("MODEL_NAME", "llama-3.3-70b-versatile")
+        self.model_name = model_name or os.getenv("MODEL_NAME", "llama-3.3-70b-versatile")
         
         if not self.api_key:
             logger.warning("GROQ_API_KEY not found in environment.")

@@ -48,10 +48,11 @@ class ReasoningAgent:
         self,
         headless: bool = False,
         max_iterations: int = 15,
+        model_name: Optional[str] = None,
         on_event: Optional[Callable[[str, dict], Awaitable[None]]] = None,
     ):
         self.browser_controller = BrowserController(headless=headless)
-        self.llm_client = LLMClient()
+        self.llm_client = LLMClient(model_name=model_name)
         self.intent_parser = IntentParser(self.llm_client)
         self.context_builder = ContextBuilder()
         self.memory = MemoryState()
