@@ -1,10 +1,18 @@
+import shutil
+import tempfile
 import unittest
 
 from agents.goal_verifier import GoalVerifier
 from agents.recovery_policy import RecoveryPolicy
 from agents.step_verifier import StepVerifier
 from browser.actions import BrowserExecutor
-from memory.signature import element_descriptor, normalize_url, page_key, view_signature
+from context.context_builder import ContextBuilder
+from memory.graph import NavigationGraph
+from memory.history import MemoryState
+from memory.signature import (
+    descriptor_for_target, element_descriptor, normalize_url, page_key,
+    target_for_descriptor, view_signature,
+)
 from models.action_models import AgentAction
 from models.orchestration_models import ActionResult
 
@@ -240,6 +248,178 @@ class StepVerifierTests(unittest.TestCase):
         self.assertTrue(
             self.verifier.needs_view_signature(AgentAction(action="click"), self._result())
         )
+
+
+class TargetDescriptorTests(unittest.TestCase):
+    ELEMENTS = [
+        {"playwright_index": "pw-id-0", "tag": "a", "text": "Home"},
+        {"playwright_index": "pw-id-3", "tag": "input", "type": "submit", "aria_label": "Search"},
+    ]
+
+    def test_target_resolves_to_a_descriptor_without_the_index(self):
+        descriptor = descriptor_for_target("pw-id-3", self.ELEMENTS)
+
+        self.assertIn("aria_label=Search", descriptor)
+        self.assertNotIn("pw-id", descriptor)
+
+    def test_same_element_at_a_new_index_yields_the_same_descriptor(self):
+        # What a later run sees after the extractor recounts.
+        renumbered = [
+            {"playwright_index": "pw-id-9", "tag": "input", "type": "submit", "aria_label": "Search"},
+        ]
+
+        self.assertEqual(
+            descriptor_for_target("pw-id-3", self.ELEMENTS),
+            descriptor_for_target("pw-id-9", renumbered),
+        )
+
+    def test_missing_or_absent_target_is_none(self):
+        self.assertIsNone(descriptor_for_target(None, self.ELEMENTS))
+        self.assertIsNone(descriptor_for_target("pw-id-99", self.ELEMENTS))
+        self.assertIsNone(descriptor_for_target("pw-id-0", []))
+
+
+class VerifiedActionIdTests(unittest.TestCase):
+    def test_same_action_for_same_goal_reinforces_one_entry(self):
+        first = MemoryState.verified_action_id("buy milk", "page_a", "click", "desc", "")
+        again = MemoryState.verified_action_id("buy milk", "page_a", "click", "desc", "")
+
+        self.assertEqual(first, again)
+
+    def test_goal_and_page_both_separate_memories(self):
+        base = MemoryState.verified_action_id("buy milk", "page_a", "click", "desc", "")
+        other_goal = MemoryState.verified_action_id("buy bread", "page_a", "click", "desc", "")
+        other_page = MemoryState.verified_action_id("buy milk", "page_b", "click", "desc", "")
+
+        self.assertNotEqual(base, other_goal)
+        self.assertNotEqual(base, other_page)
+
+
+class NavigationGraphTests(unittest.TestCase):
+    A, B, C = "page_a", "page_b", "page_c"
+
+    def setUp(self):
+        self._dir = tempfile.mkdtemp()
+        self.graph = NavigationGraph(self._dir)
+
+    def tearDown(self):
+        self.graph.close()
+        shutil.rmtree(self._dir, ignore_errors=True)
+
+    def test_edge_is_recorded_and_readable(self):
+        self.graph.record_edge(self.A, self.B, "click", "tag=a|text=Next")
+
+        edges = self.graph.neighbours(self.A)
+
+        self.assertEqual(len(edges), 1)
+        self.assertEqual(edges[0]["to_page"], self.B)
+        self.assertEqual(edges[0]["target_descriptor"], "tag=a|text=Next")
+
+    def test_repeating_a_route_reinforces_rather_than_duplicates(self):
+        for _ in range(3):
+            self.graph.record_edge(self.A, self.B, "click", "tag=a|text=Next")
+
+        edges = self.graph.neighbours(self.A)
+
+        self.assertEqual(len(edges), 1)
+        self.assertEqual(edges[0]["times_seen"], 3)
+
+    def test_self_transition_is_not_an_edge(self):
+        # The action changed the page in place; it went nowhere.
+        self.assertFalse(self.graph.record_edge(self.A, self.A, "click"))
+        self.assertEqual(self.graph.edge_count(), 0)
+
+    def test_shortest_path_is_found_across_hops(self):
+        self.graph.record_edge(self.A, self.B, "click", "to-b")
+        self.graph.record_edge(self.B, self.C, "click", "to-c")
+
+        route = self.graph.path_between(self.A, self.C)
+
+        self.assertEqual([e["to_page"] for e in route], [self.B, self.C])
+        self.assertEqual(route[0]["target_descriptor"], "to-b")
+
+    def test_unknown_route_returns_empty(self):
+        self.graph.record_edge(self.A, self.B, "click")
+
+        self.assertEqual(self.graph.path_between(self.A, "page_unreachable"), [])
+
+    def test_survives_reopening_the_store(self):
+        self.graph.record_edge(self.A, self.B, "click")
+        self.graph.close()
+
+        reopened = NavigationGraph(self._dir)
+        try:
+            self.assertEqual(len(reopened.neighbours(self.A)), 1)
+        finally:
+            reopened.close()
+
+    def test_missing_store_degrades_instead_of_raising(self):
+        broken = NavigationGraph(self._dir)
+        broken.close()
+
+        self.assertFalse(broken.is_available)
+        self.assertFalse(broken.record_edge(self.A, self.B, "click"))
+        self.assertEqual(broken.neighbours(self.A), [])
+        self.assertEqual(broken.path_between(self.A, self.B), [])
+
+
+class RecallResolutionTests(unittest.TestCase):
+    """A remembered action is only useful if it can be pointed at a live element."""
+
+    SEARCH = {"playwright_index": "pw-id-3", "tag": "input", "type": "submit", "aria_label": "Search"}
+
+    def test_remembered_descriptor_resolves_to_todays_index(self):
+        descriptor = descriptor_for_target("pw-id-3", [self.SEARCH])
+        # Next run: the extractor gave the same element a different index.
+        today = [{**self.SEARCH, "playwright_index": "pw-id-11"}]
+
+        self.assertEqual(target_for_descriptor(descriptor, today), "pw-id-11")
+
+    def test_element_not_on_screen_resolves_to_none(self):
+        descriptor = descriptor_for_target("pw-id-3", [self.SEARCH])
+        scrolled_away = [{"playwright_index": "pw-id-0", "tag": "h2", "text": "Footer"}]
+
+        self.assertIsNone(target_for_descriptor(descriptor, scrolled_away))
+
+    def test_round_trip_is_stable(self):
+        descriptor = descriptor_for_target("pw-id-3", [self.SEARCH])
+
+        self.assertEqual(target_for_descriptor(descriptor, [self.SEARCH]), "pw-id-3")
+
+
+class MemoryRecallContextTests(unittest.TestCase):
+    def setUp(self):
+        self.builder = ContextBuilder()
+
+    def test_resolved_action_is_rendered_with_its_live_target(self):
+        text = self.builder.build_memory_recall(
+            [{"action": "click", "target_descriptor": "tag=input", "live_target": "pw-id-7",
+              "evidence": "url_changed"}],
+            [],
+        )
+
+        self.assertIn("click on pw-id-7", text)
+        self.assertIn("url_changed", text)
+
+    def test_unresolved_action_is_still_offered_as_a_hint(self):
+        text = self.builder.build_memory_recall(
+            [{"action": "click", "target_descriptor": "tag=a|text=Next", "live_target": None}],
+            [],
+        )
+
+        self.assertIn("not currently visible", text)
+        self.assertIn("tag=a|text=Next", text)
+
+    def test_routes_are_rendered_with_how_often_they_were_taken(self):
+        text = self.builder.build_memory_recall(
+            [], [{"action": "navigate", "to_page": "page_b", "times_seen": 4, "target_descriptor": ""}]
+        )
+
+        self.assertIn("page_b", text)
+        self.assertIn("4x", text)
+
+    def test_nothing_recalled_renders_nothing(self):
+        self.assertEqual(self.builder.build_memory_recall([], []), "")
 
 
 if __name__ == "__main__":

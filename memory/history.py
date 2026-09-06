@@ -1,10 +1,12 @@
 from typing import List, Dict, Any, Optional
+import hashlib
 import json
 import os
 import time
 import uuid
 import chromadb
 from pydantic import BaseModel
+from memory.graph import NavigationGraph
 from memory.signature import page_key
 from models.action_models import AgentAction
 from models.orchestration_models import ActionResult
@@ -66,13 +68,22 @@ class MemoryState:
         self.run_dir = os.path.join(self.persist_dir, "runs", self.run_id)
         self.chroma_client = None
         self.collection = None
+        self.actions_collection = None
 
         os.makedirs(self.run_dir, exist_ok=True)
         try:
             self.chroma_client = chromadb.PersistentClient(path=self.persist_dir)
             self.collection = self.chroma_client.get_or_create_collection(name="agent_history")
+            # Separate collection: pages are recalled by page content, actions
+            # are recalled by the goal they served. Mixing them would make one
+            # query return the wrong kind of document.
+            self.actions_collection = self.chroma_client.get_or_create_collection(name="verified_actions")
         except BaseException as e:
             logger.warning(f"ChromaDB memory unavailable; continuing with in-process memory only: {e}")
+
+        # Routes between pages live in their own store; a vector collection
+        # answers "what is similar", not "what leads where".
+        self.graph = NavigationGraph(self.persist_dir)
 
     def add_action(self, action: AgentAction):
         self.actions_history.append(action)
@@ -154,6 +165,115 @@ class MemoryState:
                 ids=[doc_id]
             )
         )
+
+    @staticmethod
+    def verified_action_id(goal: str, page: str, action: str, descriptor: str, value: str) -> str:
+        """
+        Content-addressed, so repeating a working action reinforces one entry
+        rather than accumulating duplicates. The goal is part of the key: the
+        same click serving a different goal is a different memory.
+        """
+        payload = "|".join([goal or "", page or "", action or "", descriptor or "", value or ""])
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        return f"act_{digest[:32]}"
+
+    def record_verified_action(
+        self,
+        goal: str,
+        page: str,
+        action: AgentAction,
+        descriptor: Optional[str],
+        evidence: str,
+        url_before: Optional[str] = None,
+        url_after: Optional[str] = None,
+    ) -> bool:
+        """
+        Remember an action that demonstrably worked.
+
+        Only ever called for steps a StepVerdict marked verified. The target is
+        stored as a descriptor rather than a pw-id, because indices do not
+        survive to the next run; resolving it back to a live element is the
+        reader's job.
+
+        The document is the goal, so recall answers "what worked here, for a
+        task like this one".
+        """
+        if not self.actions_collection:
+            return False
+
+        doc_id = self.verified_action_id(goal, page, action.action, descriptor or "", action.value or "")
+        # Chroma rejects None in metadata, so absent fields are omitted.
+        metadata = {
+            k: v
+            for k, v in {
+                "page_key": page,
+                "action": action.action,
+                "target_descriptor": descriptor,
+                "value": action.value,
+                "evidence": evidence,
+                "url_before": url_before,
+                "url_after": url_after,
+                "run_id": self.run_id,
+                "verified_at": int(time.time()),
+            }.items()
+            if v is not None
+        }
+
+        return self._chroma_write(
+            f"verified {action.action} on {page}",
+            lambda: self.actions_collection.upsert(
+                documents=[goal or action.action],
+                metadatas=[metadata],
+                ids=[doc_id]
+            )
+        )
+
+    def record_navigation(
+        self,
+        from_page: str,
+        to_page: str,
+        action: AgentAction,
+        descriptor: Optional[str] = None,
+        evidence: Optional[str] = None,
+    ) -> bool:
+        """Record a verified transition as an edge in the navigation graph."""
+        return self.graph.record_edge(
+            from_page=from_page,
+            to_page=to_page,
+            action=action.action,
+            target_descriptor=descriptor,
+            value=action.value,
+            evidence=evidence,
+            run_id=self.run_id,
+        )
+
+    def recall_actions(self, goal: str, page: str, n_results: int = 3) -> List[Dict[str, Any]]:
+        """
+        Actions previously verified on this page, ranked by similarity to the
+        current goal.
+
+        Filtered to this page: an action that worked somewhere else is not
+        advice about where the agent is standing now.
+        """
+        if not self.actions_collection or not page:
+            return []
+        try:
+            count = self.actions_collection.count()
+            if count == 0:
+                return []
+            results = self.actions_collection.query(
+                query_texts=[goal or ""],
+                n_results=min(n_results, count),
+                where={"page_key": page},
+            )
+            return results["metadatas"][0] if results.get("metadatas") else []
+        except Exception as e:
+            logger.warning(f"Failed to recall verified actions for {page}: {e}")
+            return []
+
+    def recall_routes(self, page: str, limit: int = 3) -> List[Dict[str, Any]]:
+        """Verified transitions known to leave this page, most-taken first."""
+        return self.graph.neighbours(page)[:limit]
 
     def semantic_search(self, query: str, n_results: int = 1) -> List[str]:
         if not self.collection:

@@ -17,7 +17,7 @@ elements, so they renumber on scroll and are not stable identity.
 
 import hashlib
 import re
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 # Query parameters that carry session or tracking state rather than page
@@ -126,6 +126,47 @@ def element_descriptor(element: Dict[str, Any]) -> str:
         parts.append(f"frame={normalize_url(frame_url)}")
 
     return "|".join(parts)
+
+
+def descriptor_for_target(target: Optional[str], elements: Iterable[Dict[str, Any]]) -> Optional[str]:
+    """
+    Reduce the element an action targeted to a descriptor that outlives it.
+
+    A stored action cannot reference pw-id-3: indices are recounted on every
+    extraction and depend on the viewport, so the same element is a different
+    index tomorrow. The descriptor is what a later run matches against to find
+    the element again.
+
+    Returns None when the action had no target (a page-level scroll) or the
+    target is no longer in the extracted set.
+    """
+    if not target or not elements:
+        return None
+
+    for element in elements:
+        if element.get("playwright_index") == target:
+            return element_descriptor(element) or None
+    return None
+
+
+def target_for_descriptor(descriptor: Optional[str], elements: Iterable[Dict[str, Any]]) -> Optional[str]:
+    """
+    Find today's pw-id for an element remembered by descriptor.
+
+    The inverse of descriptor_for_target, and what makes a recalled action
+    executable: a memory says "the Search submit worked here", this turns that
+    back into the index the current extraction assigned it.
+
+    Returns None when the remembered element is not in the current viewport,
+    which is a normal outcome, not an error -- it may need scrolling to.
+    """
+    if not descriptor or not elements:
+        return None
+
+    for element in elements:
+        if element_descriptor(element) == descriptor:
+            return element.get("playwright_index")
+    return None
 
 
 def view_signature(url: str, elements: Iterable[Dict[str, Any]]) -> str:

@@ -16,7 +16,7 @@ from context.context_builder import ContextBuilder
 from llm.intent_parser import IntentParser
 from llm.llm_client import LLMClient
 from memory.history import MemoryState, StepRecord
-from memory.signature import page_key, view_signature
+from memory.signature import descriptor_for_target, page_key, target_for_descriptor, view_signature
 from models.action_models import AgentAction
 from models.orchestration_models import ActionResult, AgentRunResult, AgentState, StepDecision
 
@@ -115,6 +115,8 @@ class ReasoningAgent:
         """
 
     def _agent_user_prompt(self, state: AgentState) -> str:
+        # Recall goes first: it is the most actionable thing the model is given.
+        recalled = f"\n\n{state.recalled_context}" if state.recalled_context else ""
         semantic = "\n\nRelevant Semantic Memory:\n" + "\n---\n".join(state.semantic_memory) if state.semantic_memory else ""
         result = ""
         if state.last_result:
@@ -128,7 +130,7 @@ class ReasoningAgent:
         recovery_hint={state.last_result.recovery_hint}
         url_after={state.last_result.url_after}
         """
-        return f"{state.memory_context}{semantic}{result}\n\nCurrent Page Context:\n{state.page_context}"
+        return f"{state.memory_context}{recalled}{semantic}{result}\n\nCurrent Page Context:\n{state.page_context}"
 
     async def _build_state(
         self,
@@ -155,14 +157,29 @@ class ReasoningAgent:
         memory_context = self.memory.get_context_string()
         semantic_memory = self.memory.semantic_search(user_query, n_results=2)
 
+        # Recall what worked here before, and resolve each remembered target
+        # back to the index this extraction gave it.
+        recalled = []
+        for remembered in self.memory.recall_actions(user_query, current_page_key):
+            recalled.append({
+                **remembered,
+                "live_target": target_for_descriptor(remembered.get("target_descriptor"), elements),
+            })
+        routes = self.memory.recall_routes(current_page_key)
+        recalled_context = self.context_builder.build_memory_recall(recalled, routes)
+        if recalled_context:
+            await self._emit_log(f"Recalled {len(recalled)} action(s) and {len(routes)} route(s) for this page.")
+
         return AgentState(
             user_query=user_query,
             iteration=iteration,
             current_url=current_url,
             page_key=current_page_key,
             view_signature=current_view_signature,
+            elements=elements,
             page_context=page_context,
             memory_context=memory_context,
+            recalled_context=recalled_context,
             semantic_memory=semantic_memory,
             last_action=last_action,
             last_result=last_result,
@@ -262,6 +279,30 @@ class ReasoningAgent:
             f"Step {step_id} {action.action}: {verdict.status} ({verdict.evidence})",
             "success" if verdict.status == "verified" else "info",
         )
+
+        # Only demonstrably-effective actions become memory. This gate is what
+        # the verifier exists for.
+        if verdict.status == "verified":
+            descriptor = descriptor_for_target(action.target, state.elements)
+            self.memory.record_verified_action(
+                goal=state.user_query,
+                page=state.page_key,
+                action=action,
+                descriptor=descriptor,
+                evidence=verdict.evidence,
+                url_before=result.url_before,
+                url_after=result.url_after,
+            )
+            # A verified step that also landed on a different page is a route
+            # worth remembering, not just an action.
+            if result.url_after:
+                self.memory.record_navigation(
+                    from_page=state.page_key,
+                    to_page=page_key(result.url_after),
+                    action=action,
+                    descriptor=descriptor,
+                    evidence=verdict.evidence,
+                )
 
         self.memory.add_step(
             StepRecord(
