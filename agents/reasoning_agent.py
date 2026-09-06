@@ -325,6 +325,9 @@ class ReasoningAgent:
                 last_url=self.browser_controller.page.url if self.browser_controller.page else None,
             )
         finally:
-            await self._emit_log("Task execution finished. Keeping browser open for 5 seconds for visual inspection.")
-            await asyncio.sleep(5)
+            if self.browser_controller.page:
+                await self._emit_log("Task execution finished. Keeping browser open for 5 seconds for visual inspection.")
+                await asyncio.sleep(5)
+            else:
+                await self._emit_log("Task execution finished.")
             await self.browser_controller.close_browser()

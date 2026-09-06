@@ -1,23 +1,30 @@
 from typing import List, Dict, Any, Optional
 import json
 import os
+import time
 import chromadb
 from models.action_models import AgentAction
 from models.orchestration_models import ActionResult
 from loguru import logger
 
 class MemoryState:
-    def __init__(self, persist_dir: str = "./memory_db"):
+    def __init__(self, persist_dir: str = None):
         self.actions_history: List[AgentAction] = []
         self.results_history: List[ActionResult] = []
         self.visited_urls: List[str] = []
         self.extracted_data: Dict[str, Any] = {}
-        self.persist_dir = persist_dir
+        base_dir = persist_dir or os.path.join(".", "memory_db", "sessions", str(int(time.time())))
+        self.persist_dir = base_dir
+        self.chroma_client = None
+        self.collection = None
         
-        # Initialize ChromaDB for vector search
         os.makedirs(self.persist_dir, exist_ok=True)
-        self.chroma_client = chromadb.PersistentClient(path=self.persist_dir)
-        self.collection = self.chroma_client.get_or_create_collection(name="agent_history")
+        try:
+            self.chroma_client = chromadb.PersistentClient(path=self.persist_dir)
+            self.collection = self.chroma_client.get_or_create_collection(name="agent_history")
+        except BaseException as e:
+            logger.warning(f"ChromaDB memory unavailable; continuing with in-process memory only: {e}")
+
     def add_action(self, action: AgentAction):
         self.actions_history.append(action)
 
@@ -43,6 +50,8 @@ class MemoryState:
             json.dump(state, f, indent=4)
 
     def index_page_content(self, url: str, content: str):
+        if not self.collection:
+            return
         # Index page contents in vector DB
         doc_id = f"page_{len(self.visited_urls)}"
         self.collection.upsert(
@@ -52,6 +61,8 @@ class MemoryState:
         )
 
     def semantic_search(self, query: str, n_results: int = 1) -> List[str]:
+        if not self.collection:
+            return []
         if self.collection.count() == 0:
             return []
         results = self.collection.query(
