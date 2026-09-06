@@ -16,6 +16,7 @@ class BrowserExecutor:
         error: str = None,
         recovery_hint: str = None,
         url_before: str = None,
+        metadata: dict = None,
     ) -> ActionResult:
         return ActionResult(
             success=success,
@@ -26,6 +27,7 @@ class BrowserExecutor:
             recovery_hint=recovery_hint,
             url_before=url_before,
             url_after=self.page.url,
+            metadata=metadata or {},
         )
 
     async def execute(self, action: AgentAction) -> ActionResult:
