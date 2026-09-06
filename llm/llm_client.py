@@ -1,6 +1,7 @@
 import json
 import os
 import base64
+import asyncio
 from loguru import logger
 from pydantic import BaseModel
 from openai import AsyncOpenAI
@@ -9,9 +10,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class LLMClient:
-    def __init__(self, model_name: str = None):
+    def __init__(self, model_name: str = None, max_retries: int = 3):
         self.api_key = os.getenv("GROQ_API_KEY")
         self.model_name = model_name or os.getenv("MODEL_NAME", "llama-3.3-70b-versatile")
+        self.max_retries = max_retries
         
         if not self.api_key:
             logger.warning("GROQ_API_KEY not found in environment.")
@@ -20,6 +22,20 @@ class LLMClient:
             api_key=self.api_key,
             base_url="https://api.groq.com/openai/v1"
         )
+
+    async def _chat_completion_with_retry(self, **kwargs):
+        last_error = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                return await self.client.chat.completions.create(**kwargs)
+            except Exception as e:
+                last_error = e
+                if attempt >= self.max_retries:
+                    break
+                delay = min(2 ** (attempt - 1), 8)
+                logger.warning(f"LLM request failed on attempt {attempt}; retrying in {delay}s: {e}")
+                await asyncio.sleep(delay)
+        raise last_error
         
     async def generate_json(self, system_prompt: str, user_prompt: str, response_model: BaseModel = None) -> dict:
         """
@@ -29,7 +45,7 @@ class LLMClient:
         logger.info(f"Generating JSON with Groq LLM (Model: {self.model_name})...")
         
         try:
-            response = await self.client.chat.completions.create(
+            response = await self._chat_completion_with_retry(
                 model=self.model_name,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -58,7 +74,7 @@ class LLMClient:
             with open(image_path, "rb") as image_file:
                 base64_image = base64.b64encode(image_file.read()).decode('utf-8')
                 
-            response = await self.client.chat.completions.create(
+            response = await self._chat_completion_with_retry(
                 model="llama-3.2-90b-vision-preview",
                 messages=[
                     {
