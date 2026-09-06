@@ -10,6 +10,7 @@ class ActionResult(BaseModel):
 
     success: bool
     action: str
+    step_id: Optional[str] = None
     target: Optional[str] = None
     value: Optional[Any] = None
     error: Optional[str] = None

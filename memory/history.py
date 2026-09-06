@@ -5,9 +5,28 @@ import os
 import time
 import uuid
 import chromadb
+from pydantic import BaseModel
 from models.action_models import AgentAction
 from models.orchestration_models import ActionResult
 from loguru import logger
+
+
+class StepRecord(BaseModel):
+    """
+    One executed action paired with the result it produced.
+
+    An iteration can execute several actions (the decided one, a loop
+    correction, a recovery action, a vision retry), so pairing has to be
+    captured per execution rather than per iteration. Action and result are
+    stored as snapshots taken at execution time.
+    """
+
+    step_id: str
+    iteration: int
+    origin: str
+    action: AgentAction
+    result: ActionResult
+
 
 DEFAULT_MEMORY_DIR = os.path.join(".", "memory_db")
 
@@ -19,6 +38,7 @@ class MemoryState:
     def __init__(self, persist_dir: str = None, run_id: str = None):
         self.actions_history: List[AgentAction] = []
         self.results_history: List[ActionResult] = []
+        self.steps_history: List[StepRecord] = []
         self.visited_urls: List[str] = []
         self.extracted_data: Dict[str, Any] = {}
         # The vector store is durable and shared across runs; only per-run
@@ -41,7 +61,11 @@ class MemoryState:
 
     def add_result(self, result: ActionResult):
         self.results_history.append(result)
-        
+
+    def add_step(self, record: StepRecord):
+        """Record one executed action together with the result it produced."""
+        self.steps_history.append(record)
+
     def add_url(self, url: str):
         if not self.visited_urls or self.visited_urls[-1] != url:
             self.visited_urls.append(url)
@@ -55,6 +79,7 @@ class MemoryState:
             "run_id": self.run_id,
             "actions": [a.model_dump() for a in self.actions_history],
             "results": [r.model_dump() for r in self.results_history],
+            "steps": [s.model_dump() for s in self.steps_history],
             "visited_urls": self.visited_urls,
             "extracted_data": self.extracted_data
         }

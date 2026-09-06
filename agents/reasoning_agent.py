@@ -1,6 +1,7 @@
 import asyncio
 import os
 import time
+import uuid
 from typing import Awaitable, Callable, Optional
 
 from loguru import logger
@@ -13,7 +14,7 @@ from browser.dom_extractor import DOMExtractor
 from context.context_builder import ContextBuilder
 from llm.intent_parser import IntentParser
 from llm.llm_client import LLMClient
-from memory.history import MemoryState
+from memory.history import MemoryState, StepRecord
 from models.action_models import AgentAction
 from models.orchestration_models import ActionResult, AgentRunResult, AgentState, StepDecision
 
@@ -186,13 +187,15 @@ class ReasoningAgent:
         self.memory.add_action(action)
         self.memory.save_state()
 
+        origin = "llm"
         if self.memory.detect_loop():
             await self._emit_log("Detected repeated action loop. Applying recovery policy.", "warning")
             action = self.recovery_policy.from_loop()
+            origin = "loop_recovery"
             self.memory.add_action(action)
             await self._emit("action", action.model_dump())
 
-        result = await executor.execute(action)
+        result = await self._execute_step(executor, action, state, origin)
 
         if not result.success:
             recovery_action = self.recovery_policy.from_result(result)
@@ -200,11 +203,43 @@ class ReasoningAgent:
                 await self._emit_log(f"Applying recovery action: {recovery_action.action}", "warning")
                 self.memory.add_action(recovery_action)
                 await self._emit("action", recovery_action.model_dump())
-                result = await executor.execute(recovery_action)
+                result = await self._execute_step(executor, recovery_action, state, "result_recovery")
 
         if (not result.success or action.fallback_to_vision) and action.action == "click":
             result = await self._run_vision_fallback(executor, action, state, result)
 
+        return result
+
+    async def _execute_step(
+        self,
+        executor: BrowserExecutor,
+        action: AgentAction,
+        state: AgentState,
+        origin: str,
+        screenshot_path: Optional[str] = None,
+    ) -> ActionResult:
+        """
+        Execute one action and record it paired with the result it produced.
+
+        The id is minted per execution, not per iteration: a single iteration can
+        execute the decided action, a loop correction, a recovery action and a
+        vision retry, and each is a distinct step that needs its own outcome.
+        """
+        step_id = uuid.uuid4().hex[:12]
+        result = await executor.execute(action)
+        result.step_id = step_id
+        if screenshot_path:
+            result.screenshot_path = screenshot_path
+
+        self.memory.add_step(
+            StepRecord(
+                step_id=step_id,
+                iteration=state.iteration,
+                origin=origin,
+                action=action.model_copy(deep=True),
+                result=result.model_copy(deep=True),
+            )
+        )
         return result
 
     async def _run_vision_fallback(
@@ -228,9 +263,9 @@ class ReasoningAgent:
             return previous_result
 
         vision_action = action.model_copy(update={"x": vision_json["x"], "y": vision_json["y"]})
-        result = await executor.execute(vision_action)
-        result.screenshot_path = screenshot_path
-        return result
+        return await self._execute_step(
+            executor, vision_action, state, "vision_fallback", screenshot_path
+        )
 
     async def _record_result(self, result: ActionResult, iteration: int):
         if result.action == "extract" and result.success:
