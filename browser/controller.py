@@ -28,7 +28,7 @@ class BrowserController:
         
         logger.info(f"Navigating to {url}...")
         try:
-            await self.page.goto(url, wait_until="load", timeout=30000)
+            await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
             logger.info(f"Successfully loaded {url}")
             return True
         except Exception as e:
@@ -37,7 +37,11 @@ class BrowserController:
 
     async def wait_for_load(self):
         if self.page:
-            await self.page.wait_for_load_state("load")
+            try:
+                # Wait briefly for network to settle, but don't fail if trackers keep it busy
+                await self.page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
 
     async def close_browser(self):
         if self.context:

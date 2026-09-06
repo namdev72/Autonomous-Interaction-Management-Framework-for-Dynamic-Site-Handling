@@ -15,6 +15,11 @@ class BrowserExecutor:
         logger.info(f"Executing action: {action.action} on target: {action.target}")
         
         try:
+            if action.x is not None and action.y is not None:
+                logger.info(f"Executing coordinate click at ({action.x}, {action.y})")
+                await self.page.mouse.click(action.x, action.y)
+                return True
+                
             if action.action == "done":
                 logger.success("Agent signaled task completion.")
                 return True
@@ -49,7 +54,25 @@ class BrowserExecutor:
                 # If the LLM returned a plain text or generic string, try text locator
                 selector = f"text={action.target}"
 
-            locator = self.page.locator(selector).first
+            locators = self.page.locator(selector)
+            count = await locators.count()
+            if count == 0:
+                logger.error(f"No element found for selector {selector}")
+                return False
+            
+            # Multi-Match Recovery: prefer the one that is actually visible
+            locator = None
+            if count > 1:
+                logger.warning(f"Multiple elements ({count}) found for {selector}. Attempting multi-match recovery...")
+                for i in range(count):
+                    loc = locators.nth(i)
+                    if await loc.is_visible():
+                        locator = loc
+                        break
+                if not locator:
+                    locator = locators.first
+            else:
+                locator = locators.first
             
             # Wait briefly for element to be attached/visible
             await locator.wait_for(state="attached", timeout=5000)
@@ -72,6 +95,29 @@ class BrowserExecutor:
                 logger.info(f"Extracted Text: {text}")
                 # Real implementation would save this to memory, which we will do in reasoning agent
                 return text
+
+            elif action.action == "hover":
+                await locator.hover(timeout=5000)
+                
+            elif action.action == "drag_to":
+                if not action.value:
+                    logger.error("drag_to requires 'value' (the target element id/text).")
+                    return False
+                target_selector = f"[data-playwright-id='{action.value}']" if action.value.startswith("pw-id-") else f"text={action.value}"
+                target_loc = self.page.locator(target_selector).first
+                await locator.drag_to(target_loc, timeout=5000)
+                
+            elif action.action == "press_key":
+                if not action.value:
+                    logger.error("press_key requires 'value' (e.g. 'Enter').")
+                    return False
+                await locator.press(action.value, timeout=5000)
+                
+            elif action.action == "select":
+                if not action.value:
+                    logger.error("select requires 'value' (option label/value).")
+                    return False
+                await locator.select_option(label=action.value, timeout=5000)
 
             else:
                 logger.warning(f"Unsupported action: {action.action}")

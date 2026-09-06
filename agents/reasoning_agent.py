@@ -9,6 +9,8 @@ from memory.history import MemoryState
 from models.action_models import AgentAction
 import asyncio
 import base64
+import os
+import time
 from typing import Callable, Awaitable, Optional
 
 async def default_cli_printer(event_type: str, data: dict):
@@ -52,12 +54,16 @@ class ReasoningAgent:
     async def _emit_log(self, message: str, level: str = "info"):
         await self._emit("log", {"message": message, "level": level})
         
-    async def _emit_screenshot(self):
+    async def _emit_screenshot(self, name_prefix: str = "screenshot") -> Optional[str]:
         try:
             if self.browser_controller.page:
-                await self.browser_controller.page.screenshot(path="screenshot.png")
+                os.makedirs("screenshots", exist_ok=True)
+                filename = f"screenshots/{name_prefix}_{int(time.time())}.png"
+                await self.browser_controller.page.screenshot(path=filename, full_page=False)
+                return filename
         except Exception as e:
             logger.error(f"Failed to capture screenshot: {e}")
+        return None
 
     async def execute_task(self, user_query: str):
         logger.info(f"Starting agent task: {user_query}")
@@ -68,11 +74,10 @@ class ReasoningAgent:
         await self._emit_log(f"Parsed Intent: {intent.model_dump_json()}")
         
         if not intent.website_url:
-            if "book" in user_query.lower() or "scrape" in user_query.lower():
-                intent.website_url = "https://books.toscrape.com"
-            else:
-                await self._emit_log("Could not determine target website URL.", "error")
-                return
+            import urllib.parse
+            query_encoded = urllib.parse.quote(user_query)
+            intent.website_url = f"https://duckduckgo.com/?q={query_encoded}"
+            await self._emit_log(f"Falling back to web search for: {user_query}", "warning")
 
         # Step 2: Open Browser and Navigate
         await self._emit_log(f"Launching browser and navigating to {intent.website_url}...")
@@ -83,7 +88,6 @@ class ReasoningAgent:
             return
             
         await self.browser_controller.wait_for_load()
-        await self._emit_screenshot()
         executor = BrowserExecutor(self.browser_controller.page)
 
         # Autonomous Loop
@@ -105,11 +109,15 @@ class ReasoningAgent:
             
             # Step 4: Build Context
             page_context = self.context_builder.build_context(current_url, elements)
+            self.memory.index_page_content(current_url, page_context)
             memory_context = self.memory.get_context_string()
             
             system_prompt = f"""
             You are an autonomous web browser agent. 
             Your goal is: {user_query}
+            
+            IMPORTANT: You are only seeing the elements CURRENTLY VISIBLE on the screen (the viewport). 
+            If you cannot find your target, you MUST use the 'scroll' action to look further down the page!
             
             You have the ability to execute the following actions:
             - click: Clicks on a target element.
@@ -122,13 +130,15 @@ class ReasoningAgent:
             - done: Call this when the user's goal has been completely achieved.
             
             For actions requiring a target (click, type, extract, scroll), you MUST provide the EXACT 'playwright_index' (e.g. 'pw-id-3') from the context.
+            If the element you need to interact with is NOT listed in the Available Interactive Elements (for example, if it's hidden inside an iframe, like a captcha or a complex widget), you MUST set "fallback_to_vision" to true and set "action" to "click".
             
             Respond ONLY with a valid JSON object matching this schema:
             {{
                 "action": "<action_type>",
                 "target": "<playwright_index_or_null>",
                 "value": "<value_or_null>",
-                "reasoning": "<brief_reasoning>"
+                "reasoning": "<brief_reasoning>",
+                "fallback_to_vision": <boolean>
             }}
             """
             
@@ -149,10 +159,30 @@ class ReasoningAgent:
                 
                 # Save to history
                 self.memory.add_action(action)
+                self.memory.save_state()
+                
+                if self.memory.detect_loop():
+                    await self._emit_log("Detected loop of identical actions. Breaking loop...", "warning")
+                    action.action = "scroll"
+                    action.target = None
                 
                 # Execute Action
                 action_success = await executor.execute(action)
                 
+                if not action_success or action.fallback_to_vision:
+                    await self._emit_log("Execution failed or vision fallback requested. Triggering Vision Fallback...", "warning")
+                    screenshot_path = await self._emit_screenshot(name_prefix="vision_fallback")
+                    if screenshot_path:
+                        vision_json = await self.llm_client.generate_vision_json(screenshot_path, user_prompt)
+                        if vision_json and "x" in vision_json and "y" in vision_json:
+                            action.x = vision_json["x"]
+                            action.y = vision_json["y"]
+                            action_success = await executor.execute(action)
+                        else:
+                            await self._emit_log("Vision LLM failed to return valid coordinates.", "error")
+                    else:
+                        await self._emit_log("Failed to take screenshot for Vision fallback.", "error")
+                    
                 if action.action == "done":
                     done = True
                     await self._emit_log("Goal achieved according to the agent.", "success")
@@ -165,7 +195,6 @@ class ReasoningAgent:
                     await self._emit("extraction", {"key": key, "value": action_success})
                 
                 await asyncio.sleep(2)
-                await self._emit_screenshot()
                 
             except Exception as e:
                 logger.error(f"Failed to parse or execute action: {e}")
@@ -175,5 +204,6 @@ class ReasoningAgent:
         if not done:
             await self._emit_log("Reached maximum iterations before achieving the goal.", "warning")
             
-        await self._emit_log("Task execution finished.")
+        await self._emit_log("Task execution finished. Keeping browser open for 5 seconds for visual inspection.")
+        await asyncio.sleep(5)
         await self.browser_controller.close_browser()

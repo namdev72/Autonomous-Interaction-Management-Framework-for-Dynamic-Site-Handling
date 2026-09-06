@@ -8,7 +8,7 @@ class ParsedIntent(BaseModel):
     website: Optional[str] = None
     website_url: Optional[str] = None
     intent: str
-    query: str
+    query: Optional[str] = ""
 
 class IntentParser:
     def __init__(self, llm_client: LLMClient):

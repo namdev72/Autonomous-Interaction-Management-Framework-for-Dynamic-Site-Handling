@@ -1,5 +1,6 @@
 import json
 import os
+import base64
 from loguru import logger
 from pydantic import BaseModel
 from openai import AsyncOpenAI
@@ -45,4 +46,42 @@ class LLMClient:
             return json.loads(content)
         except Exception as e:
             logger.error(f"LLM request failed: {e}")
+            return {}
+
+    async def generate_vision_json(self, image_path: str, prompt: str) -> dict:
+        """
+        Sends a screenshot to the Vision LLM (llama-3.2-90b-vision-preview) and requests JSON response.
+        """
+        logger.info("Generating Vision fallback coordinates with Groq Vision...")
+        
+        try:
+            with open(image_path, "rb") as image_file:
+                base64_image = base64.b64encode(image_file.read()).decode('utf-8')
+                
+            response = await self.client.chat.completions.create(
+                model="llama-3.2-90b-vision-preview",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt + "\n\nProvide ONLY a valid JSON object matching this schema: {\"x\": <int>, \"y\": <int>}. Give the X and Y coordinates to click to accomplish the goal on this screen."},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{base64_image}",
+                                },
+                            },
+                        ],
+                    }
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.0
+            )
+            
+            content = response.choices[0].message.content
+            logger.debug(f"Vision LLM Raw Output: {content}")
+            return json.loads(content)
+            
+        except Exception as e:
+            logger.error(f"Vision LLM request failed: {e}")
             return {}

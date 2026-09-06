@@ -1,0 +1,36 @@
+{
+    "actions": [
+        {
+            "action": "type",
+            "target": "pw-id-2",
+            "value": "iPhone 16",
+            "reasoning": "Enter search query",
+            "fallback_to_vision": false,
+            "x": null,
+            "y": null
+        },
+        {
+            "action": "click",
+            "target": "pw-id-3",
+            "value": null,
+            "reasoning": "Click the search button to execute the search query",
+            "fallback_to_vision": false,
+            "x": null,
+            "y": null
+        },
+        {
+            "action": "done",
+            "target": null,
+            "value": null,
+            "reasoning": "Search results for iPhone 16 are displayed.",
+            "fallback_to_vision": false,
+            "x": null,
+            "y": null
+        }
+    ],
+    "visited_urls": [
+        "https://www.amazon.com/",
+        "https://www.amazon.com/s?k=iPhone+16&crid=2MUZMVD8M5O0F&sprefix=iphone+16%2Caps%2C345&ref=nb_sb_noss_1"
+    ],
+    "extracted_data": {}
+}

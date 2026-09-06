@@ -24,6 +24,38 @@ class DOMExtractor:
                 return rect.width > 0 && rect.height > 0;
             }
 
+            function isInViewport(el) {
+                const rect = el.getBoundingClientRect();
+                return (
+                    rect.top < (window.innerHeight || document.documentElement.clientHeight) &&
+                    rect.bottom > 0 &&
+                    rect.left < (window.innerWidth || document.documentElement.clientWidth) &&
+                    rect.right > 0
+                );
+            }
+
+            function isObscured(el) {
+                const rect = el.getBoundingClientRect();
+                const centerX = rect.left + rect.width / 2;
+                const centerY = rect.top + rect.height / 2;
+                
+                // If the center point is outside the viewport, we can't reliably check, assume not obscured
+                if (centerX < 0 || centerX > window.innerWidth || centerY < 0 || centerY > window.innerHeight) {
+                    return false;
+                }
+                
+                // Penetrate shadow DOM to get the real top element
+                let topEl = document.elementFromPoint(centerX, centerY);
+                while (topEl && topEl.shadowRoot) {
+                    const innerTop = topEl.shadowRoot.elementFromPoint(centerX, centerY);
+                    if (!innerTop || innerTop === topEl) break;
+                    topEl = innerTop;
+                }
+                
+                if (!topEl) return false;
+                return !el.contains(topEl) && !topEl.contains(el);
+            }
+
             function isChildOfInteractive(el) {
                 let parent = el.parentElement;
                 while (parent) {
@@ -50,12 +82,29 @@ class DOMExtractor:
                 return false;
             }
 
-            const elements = document.querySelectorAll('h1, h2, h3, p, span.price_color, input, button, a, select, textarea, [role="button"], [role="link"], [tabindex]:not([tabindex="-1"])');
+            function getInteractiveElements(root) {
+                let found = [];
+                const selector = 'h1, h2, h3, p, span.price_color, input, button, a, select, textarea, [role="button"], [role="link"], [tabindex]:not([tabindex="-1"])';
+                
+                if (root.querySelectorAll) {
+                    found.push(...root.querySelectorAll(selector));
+                }
+                
+                const allNodes = root.querySelectorAll ? root.querySelectorAll('*') : [];
+                allNodes.forEach(node => {
+                    if (node.shadowRoot) {
+                        found = found.concat(getInteractiveElements(node.shadowRoot));
+                    }
+                });
+                return found;
+            }
+
+            const elements = getInteractiveElements(document);
             const result = [];
             let counter = 0;
             
             elements.forEach((el) => {
-                if (isVisible(el) && !el.disabled) {
+                if (isVisible(el) && isInViewport(el) && !el.disabled && !isObscured(el)) {
                     const tag = el.tagName.toLowerCase();
                     
                     // Skip if inside footer unless it's a form input/button/select/textarea

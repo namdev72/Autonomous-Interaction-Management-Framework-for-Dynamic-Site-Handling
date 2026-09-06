@@ -12,19 +12,24 @@ class ContextBuilder:
         context_lines = [f"Current URL: {current_url}", "Available Interactive Elements:"]
         
         for el in elements:
-            # Build a descriptive string for each element
-            desc_parts = [f"{el.get('playwright_index')}. [{el.get('tag').upper()}]"]
+            desc = f"{el.get('playwright_index')} [{el.get('tag').upper()}]"
             
             if el.get("text"):
-                desc_parts.append(f"Text: '{el.get('text')}'")
+                desc += f" '{el.get('text')}'"
             if el.get("placeholder"):
-                desc_parts.append(f"Placeholder: '{el.get('placeholder')}'")
+                desc += f" pl:'{el.get('placeholder')}'"
             if el.get("aria_label"):
-                desc_parts.append(f"Aria-label: '{el.get('aria_label')}'")
+                desc += f" aria:'{el.get('aria_label')}'"
             if el.get("type"):
-                desc_parts.append(f"Type: '{el.get('type')}'")
+                desc += f" type:{el.get('type')}"
                 
-            context_lines.append(" ".join(desc_parts))
+            context_lines.append(desc)
+            
+            # Truncate to prevent exceeding free-tier LLM token limits (e.g. Groq's 8000 TPM limit)
+            # 15,000 characters is roughly 3,500 tokens
+            if sum(len(line) for line in context_lines) > 15000:
+                context_lines.append("... [DOM TRUNCATED DUE TO MAX TOKEN LIMITS] ...")
+                break
             
         context_text = "\n".join(context_lines)
         logger.debug(f"Generated Context:\n{context_text}")
