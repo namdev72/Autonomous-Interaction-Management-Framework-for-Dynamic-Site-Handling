@@ -8,6 +8,7 @@ from loguru import logger
 
 from agents.goal_verifier import GoalVerifier
 from agents.recovery_policy import RecoveryPolicy
+from agents.step_verifier import StepVerifier
 from browser.actions import BrowserExecutor
 from browser.controller import BrowserController
 from browser.dom_extractor import DOMExtractor
@@ -60,6 +61,7 @@ class ReasoningAgent:
         self.memory = MemoryState()
         self.recovery_policy = RecoveryPolicy()
         self.goal_verifier = GoalVerifier(self.llm_client)
+        self.step_verifier = StepVerifier()
         self.max_iterations = max_iterations
         self.on_event = on_event if on_event is not None else default_cli_printer
 
@@ -204,7 +206,7 @@ class ReasoningAgent:
             self.memory.add_action(action)
             await self._emit("action", action.model_dump())
 
-        result = await self._execute_step(executor, action, state, origin)
+        result = await self._execute_step(executor, action, state, origin, state.view_signature)
 
         if not result.success:
             recovery_action = self.recovery_policy.from_result(result)
@@ -212,7 +214,10 @@ class ReasoningAgent:
                 await self._emit_log(f"Applying recovery action: {recovery_action.action}", "warning")
                 self.memory.add_action(recovery_action)
                 await self._emit("action", recovery_action.model_dump())
-                result = await self._execute_step(executor, recovery_action, state, "result_recovery")
+                # The recovery acts on the page as the failed action left it.
+                result = await self._execute_step(
+                    executor, recovery_action, state, "result_recovery", self._signature_after(result, state)
+                )
 
         if (not result.success or action.fallback_to_vision) and action.action == "click":
             result = await self._run_vision_fallback(executor, action, state, result)
@@ -225,20 +230,38 @@ class ReasoningAgent:
         action: AgentAction,
         state: AgentState,
         origin: str,
+        signature_before: Optional[str] = None,
         screenshot_path: Optional[str] = None,
     ) -> ActionResult:
         """
-        Execute one action and record it paired with the result it produced.
+        Execute one action, verify it did something, and record the three
+        together.
 
         The id is minted per execution, not per iteration: a single iteration can
         execute the decided action, a loop correction, a recovery action and a
         vision retry, and each is a distinct step that needs its own outcome.
         """
         step_id = uuid.uuid4().hex[:12]
+        before = signature_before or state.view_signature
+
         result = await executor.execute(action)
         result.step_id = step_id
         if screenshot_path:
             result.screenshot_path = screenshot_path
+
+        after = None
+        if self.step_verifier.needs_view_signature(action, result):
+            after = await self._capture_view_signature()
+        if after:
+            # Carried so the next step in this iteration knows the state it
+            # is acting on, rather than re-using the iteration's opening one.
+            result.metadata["view_signature_after"] = after
+
+        verdict = self.step_verifier.verify(action, result, before, after)
+        await self._emit_log(
+            f"Step {step_id} {action.action}: {verdict.status} ({verdict.evidence})",
+            "success" if verdict.status == "verified" else "info",
+        )
 
         self.memory.add_step(
             StepRecord(
@@ -247,9 +270,27 @@ class ReasoningAgent:
                 origin=origin,
                 action=action.model_copy(deep=True),
                 result=result.model_copy(deep=True),
+                verdict=verdict,
             )
         )
         return result
+
+    async def _capture_view_signature(self) -> Optional[str]:
+        """Re-read the viewport after an action, to compare against the before."""
+        try:
+            page = self.browser_controller.page
+            if not page:
+                return None
+            elements = await DOMExtractor(page).extract_interactive_elements()
+            return view_signature(page.url, elements)
+        except Exception as e:
+            logger.warning(f"Could not capture post-action view signature: {e}")
+            return None
+
+    @staticmethod
+    def _signature_after(result: ActionResult, state: AgentState) -> Optional[str]:
+        """The viewport as the previous step left it, falling back to the iteration's."""
+        return result.metadata.get("view_signature_after") or state.view_signature
 
     async def _run_vision_fallback(
         self,
@@ -273,7 +314,12 @@ class ReasoningAgent:
 
         vision_action = action.model_copy(update={"x": vision_json["x"], "y": vision_json["y"]})
         return await self._execute_step(
-            executor, vision_action, state, "vision_fallback", screenshot_path
+            executor,
+            vision_action,
+            state,
+            "vision_fallback",
+            self._signature_after(previous_result, state),
+            screenshot_path,
         )
 
     async def _record_result(self, result: ActionResult, iteration: int):

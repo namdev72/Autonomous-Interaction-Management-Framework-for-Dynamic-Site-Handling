@@ -11,6 +11,23 @@ from models.orchestration_models import ActionResult
 from loguru import logger
 
 
+class StepVerdict(BaseModel):
+    """
+    Whether an executed step had an observable effect.
+
+    Separate from ActionResult.success, which only means Playwright did not
+    raise. A click that resolves a locator and fires cleanly but changes
+    nothing on the page is success=True and status="unverified".
+
+    status: verified | unverified | not_applicable
+    """
+
+    status: str
+    evidence: str
+    signature_before: Optional[str] = None
+    signature_after: Optional[str] = None
+
+
 class StepRecord(BaseModel):
     """
     One executed action paired with the result it produced.
@@ -26,6 +43,7 @@ class StepRecord(BaseModel):
     origin: str
     action: AgentAction
     result: ActionResult
+    verdict: Optional[StepVerdict] = None
 
 
 DEFAULT_MEMORY_DIR = os.path.join(".", "memory_db")

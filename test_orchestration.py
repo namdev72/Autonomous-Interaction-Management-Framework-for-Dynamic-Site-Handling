@@ -2,6 +2,7 @@ import unittest
 
 from agents.goal_verifier import GoalVerifier
 from agents.recovery_policy import RecoveryPolicy
+from agents.step_verifier import StepVerifier
 from browser.actions import BrowserExecutor
 from memory.signature import element_descriptor, normalize_url, page_key, view_signature
 from models.action_models import AgentAction
@@ -153,6 +154,91 @@ class SignatureTests(unittest.TestCase):
         self.assertEqual(
             element_descriptor({"tag": "a", "href": "/dp/B0C?ref=sr_1_1&psc=1"}),
             element_descriptor({"tag": "a", "href": "/dp/B0C"}),
+        )
+
+
+class StepVerifierTests(unittest.TestCase):
+    A = "https://a.test/"
+    B = "https://b.test/"
+
+    def setUp(self):
+        self.verifier = StepVerifier()
+
+    def _result(self, success=True, url_after=None, value=None):
+        return ActionResult(
+            success=success,
+            action="x",
+            url_before=self.A,
+            url_after=url_after or self.A,
+            value=value,
+        )
+
+    def test_url_change_verifies_a_click(self):
+        verdict = self.verifier.verify(
+            AgentAction(action="click"), self._result(url_after=self.B)
+        )
+
+        self.assertEqual(verdict.status, "verified")
+        self.assertEqual(verdict.evidence, "url_changed")
+
+    def test_viewport_change_verifies_a_scroll(self):
+        verdict = self.verifier.verify(
+            AgentAction(action="scroll"), self._result(), "view_aaa", "view_bbb"
+        )
+
+        self.assertEqual(verdict.status, "verified")
+        self.assertEqual(verdict.evidence, "view_changed")
+
+    def test_clean_execution_with_no_change_is_not_verified(self):
+        # The gap ActionResult.success hides: Playwright did not raise, but
+        # nothing on the page moved.
+        verdict = self.verifier.verify(
+            AgentAction(action="click"), self._result(), "view_aaa", "view_aaa"
+        )
+
+        self.assertTrue(self._result().success)
+        self.assertEqual(verdict.status, "unverified")
+        self.assertEqual(verdict.evidence, "no_observable_change")
+
+    def test_navigation_to_the_same_url_is_not_verified(self):
+        verdict = self.verifier.verify(AgentAction(action="navigate"), self._result())
+
+        self.assertEqual(verdict.status, "unverified")
+
+    def test_extract_is_judged_on_its_value(self):
+        got = self.verifier.verify(AgentAction(action="extract"), self._result(value=" 19.99 "))
+        empty = self.verifier.verify(AgentAction(action="extract"), self._result(value="   "))
+
+        self.assertEqual(got.status, "verified")
+        self.assertEqual(empty.status, "unverified")
+
+    def test_failed_execution_is_never_verified(self):
+        verdict = self.verifier.verify(
+            AgentAction(action="click"), self._result(success=False, url_after=self.B)
+        )
+
+        self.assertEqual(verdict.status, "unverified")
+        self.assertEqual(verdict.evidence, "execution_failed")
+
+    def test_wait_and_done_are_not_applicable(self):
+        for name in ("wait", "done"):
+            verdict = self.verifier.verify(AgentAction(action=name), self._result())
+            self.assertEqual(verdict.status, "not_applicable", name)
+
+    def test_dom_is_not_re_extracted_when_the_answer_is_already_known(self):
+        cases = {
+            "url already changed": (AgentAction(action="click"), self._result(url_after=self.B)),
+            "navigation": (AgentAction(action="navigate"), self._result()),
+            "extraction": (AgentAction(action="extract"), self._result(value="x")),
+            "wait": (AgentAction(action="wait"), self._result()),
+            "failed": (AgentAction(action="click"), self._result(success=False)),
+        }
+        for label, (action, result) in cases.items():
+            self.assertFalse(self.verifier.needs_view_signature(action, result), label)
+
+    def test_dom_is_re_extracted_when_it_is_the_only_evidence(self):
+        self.assertTrue(
+            self.verifier.needs_view_signature(AgentAction(action="click"), self._result())
         )
 
 
