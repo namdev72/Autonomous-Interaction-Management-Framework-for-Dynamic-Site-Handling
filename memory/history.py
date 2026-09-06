@@ -52,24 +52,31 @@ class MemoryState:
     def index_page_content(self, url: str, content: str):
         if not self.collection:
             return
-        # Index page contents in vector DB
-        doc_id = f"page_{len(self.visited_urls)}"
-        self.collection.upsert(
-            documents=[content],
-            metadatas=[{"url": url}],
-            ids=[doc_id]
-        )
+        try:
+            doc_id = f"page_{len(self.visited_urls)}"
+            self.collection.upsert(
+                documents=[content],
+                metadatas=[{"url": url}],
+                ids=[doc_id]
+            )
+        except Exception as e:
+            logger.warning(f"Failed to index page content in vector memory: {e}")
 
     def semantic_search(self, query: str, n_results: int = 1) -> List[str]:
         if not self.collection:
             return []
-        if self.collection.count() == 0:
+        try:
+            count = self.collection.count()
+            if count == 0:
+                return []
+            results = self.collection.query(
+                query_texts=[query],
+                n_results=min(n_results, count)
+            )
+            return results["documents"][0] if results["documents"] else []
+        except Exception as e:
+            logger.warning(f"Failed to query vector memory: {e}")
             return []
-        results = self.collection.query(
-            query_texts=[query],
-            n_results=min(n_results, self.collection.count())
-        )
-        return results["documents"][0] if results["documents"] else []
         
     def detect_loop(self) -> bool:
         if len(self.actions_history) < 3:
