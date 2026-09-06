@@ -74,15 +74,25 @@ class BrowserExecutor:
                 logger.error(f"Action '{action.action}' requires a target.")
                 return self._result(action, False, error=f"Action '{action.action}' requires a target.", recovery_hint="choose_visible_target_or_scroll", url_before=url_before)
 
+            target = action.target
+            locator_root = self.page
+            if target.startswith("frame-") and ":" in target:
+                frame_token, target = target.split(":", 1)
+                try:
+                    frame_index = int(frame_token.replace("frame-", ""))
+                    locator_root = self.page.frames[frame_index]
+                except (ValueError, IndexError):
+                    return self._result(action, False, error=f"Invalid frame target {action.target}", recovery_hint="refresh_dom_or_use_vision", url_before=url_before)
+
             # Build a Playwright locator.
             # Prefer our injected data-playwright-id, otherwise fallback to standard text/css
-            if action.target.startswith("pw-id-"):
-                selector = f"[data-playwright-id='{action.target}']"
+            if target.startswith("pw-id-"):
+                selector = f"[data-playwright-id='{target}']"
             else:
                 # If the LLM returned a plain text or generic string, try text locator
-                selector = f"text={action.target}"
+                selector = f"text={target}"
 
-            locators = self.page.locator(selector)
+            locators = locator_root.locator(selector)
             count = await locators.count()
             if count == 0:
                 logger.error(f"No element found for selector {selector}")

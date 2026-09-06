@@ -158,16 +158,25 @@ class DOMExtractor:
         }
         """
         
-        # Retry mechanism to wait for DOM elements to render
+        # Retry mechanism to wait for DOM elements to render across main page and iframes.
         import asyncio
         for attempt in range(5):
-            try:
-                elements = await self.page.evaluate(js_script)
-                if elements:
-                    logger.info(f"Extracted {len(elements)} interactive elements (Attempt {attempt + 1}).")
-                    return elements
-            except Exception as e:
-                logger.error(f"Failed to extract DOM elements: {e}")
+            all_elements = []
+            for frame_index, frame in enumerate(self.page.frames):
+                try:
+                    elements = await frame.evaluate(js_script)
+                    for element in elements:
+                        if frame_index > 0:
+                            element["playwright_index"] = f"frame-{frame_index}:{element['playwright_index']}"
+                            element["frame_url"] = frame.url
+                        all_elements.append(element)
+                except Exception as e:
+                    logger.debug(f"Failed to extract DOM elements from frame {frame_index}: {e}")
+
+            if all_elements:
+                logger.info(f"Extracted {len(all_elements)} interactive elements (Attempt {attempt + 1}).")
+                return all_elements
+
             await asyncio.sleep(0.5)
             
         logger.warning("No interactive elements extracted from page.")

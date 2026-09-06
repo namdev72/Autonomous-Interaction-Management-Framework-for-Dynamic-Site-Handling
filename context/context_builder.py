@@ -22,6 +22,8 @@ class ContextBuilder:
                 desc += f" aria:'{el.get('aria_label')}'"
             if el.get("type"):
                 desc += f" type:{el.get('type')}"
+            if el.get("frame_url"):
+                desc += f" frame:'{el.get('frame_url')}'"
                 
             context_lines.append(desc)
             
