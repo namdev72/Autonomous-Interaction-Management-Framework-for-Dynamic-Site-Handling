@@ -126,7 +126,7 @@ class ReasoningAgent:
 
     def _agent_user_prompt(self, state: AgentState) -> str:
         # Recall goes first: it is the most actionable thing the model is given.
-        recalled = f"\n\n{state.recalled_context}" if state.recalled_context else ""
+        recalled = f"\n\n{state.recalled_context}\n\n" if state.recalled_context else ""
         semantic = "\n\nRelevant Semantic Memory:\n" + "\n---\n".join(state.semantic_memory) if state.semantic_memory else ""
         result = ""
         if state.last_result:
@@ -143,7 +143,7 @@ class ReasoningAgent:
         # The verifier judges "done", so the planner is told what it said is
         # still missing; otherwise it keeps claiming done on the same page.
         feedback = f"\n\nGoal check: not achieved yet. Still missing: {state.goal_feedback}" if state.goal_feedback else ""
-        return f"{state.memory_context}{recalled}{semantic}{result}{feedback}\n\nCurrent Page Context:\n{state.page_context}"
+        return f"{recalled}{state.memory_context}{semantic}{result}{feedback}\n\nCurrent Page Context:\n{state.page_context}"
 
     async def _build_state(
         self,
