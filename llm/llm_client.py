@@ -12,7 +12,8 @@ load_dotenv()
 class LLMClient:
     def __init__(self, model_name: str = None, max_retries: int = 3):
         self.api_key = os.getenv("GROQ_API_KEY")
-        self.model_name = model_name or os.getenv("MODEL_NAME", "llama-3.3-70b-versatile")
+        self.model_name = model_name or os.getenv("MODEL_NAME", "qwen/qwen3.8-27b")
+        self.vision_model_name = os.getenv("VISION_MODEL_NAME")
         self.max_retries = max_retries
         self.client = None
         
@@ -83,8 +84,12 @@ class LLMClient:
             with open(image_path, "rb") as image_file:
                 base64_image = base64.b64encode(image_file.read()).decode('utf-8')
                 
+            if not self.vision_model_name:
+                logger.error("VISION_MODEL_NAME is not configured; vision fallback is disabled.")
+                return {}
+
             response = await self._chat_completion_with_retry(
-                model="llama-3.2-90b-vision-preview",
+                model=self.vision_model_name,
                 messages=[
                     {
                         "role": "user",

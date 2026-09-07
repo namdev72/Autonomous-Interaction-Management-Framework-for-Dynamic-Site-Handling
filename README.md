@@ -56,7 +56,8 @@ Create a `.env` file in the project root:
 
 ```env
 GROQ_API_KEY=your_groq_api_key_here
-MODEL_NAME=llama-3.3-70b-versatile
+MODEL_NAME=qwen/qwen3.8-27b
+VISION_MODEL_NAME=
 ```
 
 ## Usage
@@ -76,7 +77,7 @@ python main.py "go to books.toscrape.com and extract the price of a light in the
 Useful runtime flags:
 
 ```bash
-python main.py --headless --max-iterations 20 --model llama-3.3-70b-versatile "open wikipedia and search for Samsung"
+python main.py --headless --max-iterations 20 --model qwen/qwen3.8-27b "open wikipedia and search for Samsung"
 ```
 
 ## Tests
