@@ -45,11 +45,12 @@ The agent loop runs as:
 
 ## Installation
 
-```bash
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-playwright install
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m playwright install chromium
 ```
 
 Create a `.env` file in the project root:
@@ -99,3 +100,21 @@ python -m compileall agents browser context llm memory models main.py test_orche
 - Runtime memory is written to `memory_db/` and ignored by Git.
 - Screenshots are written to `screenshots/`.
 - Full browser runs require a valid `GROQ_API_KEY`.
+- A vision model is optional. Leave `VISION_MODEL_NAME` blank unless your Groq account provides a vision-capable model; DOM-based actions continue to work without it.
+
+## Troubleshooting
+
+If startup reports that `llama-3.3-70b-versatile` is retired, the client automatically replaces it with the configured default. Clear a stale override from the current PowerShell session before restarting the agent:
+
+```powershell
+Remove-Item Env:MODEL_NAME -ErrorAction SilentlyContinue
+```
+
+If ChromaDB reports `range start index 10 out of range for slice of length 9`, the active Python environment has an older Chroma release than the existing memory schema. Activate `.venv` and reinstall the pinned dependencies:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+The memory database does not need to be deleted.
