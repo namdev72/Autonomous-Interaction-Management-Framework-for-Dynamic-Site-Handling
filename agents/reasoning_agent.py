@@ -1,19 +1,22 @@
 import asyncio
 import os
 import time
+import uuid
 from typing import Awaitable, Callable, Optional
 
 from loguru import logger
 
 from agents.goal_verifier import GoalVerifier
 from agents.recovery_policy import RecoveryPolicy
+from agents.step_verifier import StepVerifier
 from browser.actions import BrowserExecutor
 from browser.controller import BrowserController
 from browser.dom_extractor import DOMExtractor
 from context.context_builder import ContextBuilder
 from llm.intent_parser import IntentParser
 from llm.llm_client import LLMClient
-from memory.history import MemoryState
+from memory.history import MemoryState, StepRecord
+from memory.signature import descriptor_for_target, page_key, target_for_descriptor, view_signature
 from models.action_models import AgentAction
 from models.orchestration_models import ActionResult, AgentRunResult, AgentState, StepDecision
 
@@ -58,6 +61,7 @@ class ReasoningAgent:
         self.memory = MemoryState()
         self.recovery_policy = RecoveryPolicy()
         self.goal_verifier = GoalVerifier(self.llm_client)
+        self.step_verifier = StepVerifier()
         self.max_iterations = max_iterations
         self.on_event = on_event if on_event is not None else default_cli_printer
 
@@ -111,6 +115,8 @@ class ReasoningAgent:
         """
 
     def _agent_user_prompt(self, state: AgentState) -> str:
+        # Recall goes first: it is the most actionable thing the model is given.
+        recalled = f"\n\n{state.recalled_context}" if state.recalled_context else ""
         semantic = "\n\nRelevant Semantic Memory:\n" + "\n---\n".join(state.semantic_memory) if state.semantic_memory else ""
         result = ""
         if state.last_result:
@@ -124,7 +130,7 @@ class ReasoningAgent:
         recovery_hint={state.last_result.recovery_hint}
         url_after={state.last_result.url_after}
         """
-        return f"{state.memory_context}{semantic}{result}\n\nCurrent Page Context:\n{state.page_context}"
+        return f"{state.memory_context}{recalled}{semantic}{result}\n\nCurrent Page Context:\n{state.page_context}"
 
     async def _build_state(
         self,
@@ -140,17 +146,40 @@ class ReasoningAgent:
         current_url = self.browser_controller.page.url
         self.memory.add_url(current_url)
 
+        # Computed once per iteration and carried on the state: page identity
+        # for storage keys, viewport signature for detecting that a step
+        # changed something.
+        current_page_key = page_key(current_url)
+        current_view_signature = view_signature(current_url, elements)
+
         page_context = self.context_builder.build_context(current_url, elements)
-        self.memory.index_page_content(current_url, page_context)
+        self.memory.index_page_content(current_url, page_context, current_page_key)
         memory_context = self.memory.get_context_string()
         semantic_memory = self.memory.semantic_search(user_query, n_results=2)
+
+        # Recall what worked here before, and resolve each remembered target
+        # back to the index this extraction gave it.
+        recalled = []
+        for remembered in self.memory.recall_actions(user_query, current_page_key):
+            recalled.append({
+                **remembered,
+                "live_target": target_for_descriptor(remembered.get("target_descriptor"), elements),
+            })
+        routes = self.memory.recall_routes(current_page_key)
+        recalled_context = self.context_builder.build_memory_recall(recalled, routes)
+        if recalled_context:
+            await self._emit_log(f"Recalled {len(recalled)} action(s) and {len(routes)} route(s) for this page.")
 
         return AgentState(
             user_query=user_query,
             iteration=iteration,
             current_url=current_url,
+            page_key=current_page_key,
+            view_signature=current_view_signature,
+            elements=elements,
             page_context=page_context,
             memory_context=memory_context,
+            recalled_context=recalled_context,
             semantic_memory=semantic_memory,
             last_action=last_action,
             last_result=last_result,
@@ -186,13 +215,15 @@ class ReasoningAgent:
         self.memory.add_action(action)
         self.memory.save_state()
 
+        origin = "llm"
         if self.memory.detect_loop():
             await self._emit_log("Detected repeated action loop. Applying recovery policy.", "warning")
             action = self.recovery_policy.from_loop()
+            origin = "loop_recovery"
             self.memory.add_action(action)
             await self._emit("action", action.model_dump())
 
-        result = await executor.execute(action)
+        result = await self._execute_step(executor, action, state, origin, state.view_signature)
 
         if not result.success:
             recovery_action = self.recovery_policy.from_result(result)
@@ -200,12 +231,107 @@ class ReasoningAgent:
                 await self._emit_log(f"Applying recovery action: {recovery_action.action}", "warning")
                 self.memory.add_action(recovery_action)
                 await self._emit("action", recovery_action.model_dump())
-                result = await executor.execute(recovery_action)
+                # The recovery acts on the page as the failed action left it.
+                result = await self._execute_step(
+                    executor, recovery_action, state, "result_recovery", self._signature_after(result, state)
+                )
 
         if (not result.success or action.fallback_to_vision) and action.action == "click":
             result = await self._run_vision_fallback(executor, action, state, result)
 
         return result
+
+    async def _execute_step(
+        self,
+        executor: BrowserExecutor,
+        action: AgentAction,
+        state: AgentState,
+        origin: str,
+        signature_before: Optional[str] = None,
+        screenshot_path: Optional[str] = None,
+    ) -> ActionResult:
+        """
+        Execute one action, verify it did something, and record the three
+        together.
+
+        The id is minted per execution, not per iteration: a single iteration can
+        execute the decided action, a loop correction, a recovery action and a
+        vision retry, and each is a distinct step that needs its own outcome.
+        """
+        step_id = uuid.uuid4().hex[:12]
+        before = signature_before or state.view_signature
+
+        result = await executor.execute(action)
+        result.step_id = step_id
+        if screenshot_path:
+            result.screenshot_path = screenshot_path
+
+        after = None
+        if self.step_verifier.needs_view_signature(action, result):
+            after = await self._capture_view_signature()
+        if after:
+            # Carried so the next step in this iteration knows the state it
+            # is acting on, rather than re-using the iteration's opening one.
+            result.metadata["view_signature_after"] = after
+
+        verdict = self.step_verifier.verify(action, result, before, after)
+        await self._emit_log(
+            f"Step {step_id} {action.action}: {verdict.status} ({verdict.evidence})",
+            "success" if verdict.status == "verified" else "info",
+        )
+
+        # Only demonstrably-effective actions become memory. This gate is what
+        # the verifier exists for.
+        if verdict.status == "verified":
+            descriptor = descriptor_for_target(action.target, state.elements)
+            self.memory.record_verified_action(
+                goal=state.user_query,
+                page=state.page_key,
+                action=action,
+                descriptor=descriptor,
+                evidence=verdict.evidence,
+                url_before=result.url_before,
+                url_after=result.url_after,
+            )
+            # A verified step that also landed on a different page is a route
+            # worth remembering, not just an action.
+            if result.url_after:
+                self.memory.record_navigation(
+                    from_page=state.page_key,
+                    to_page=page_key(result.url_after),
+                    action=action,
+                    descriptor=descriptor,
+                    evidence=verdict.evidence,
+                )
+
+        self.memory.add_step(
+            StepRecord(
+                step_id=step_id,
+                iteration=state.iteration,
+                origin=origin,
+                action=action.model_copy(deep=True),
+                result=result.model_copy(deep=True),
+                verdict=verdict,
+            )
+        )
+        return result
+
+    async def _capture_view_signature(self) -> Optional[str]:
+        """Re-read the viewport after an action, to compare against the before."""
+        try:
+            page = self.browser_controller.page
+            if not page:
+                return None
+            elements = await DOMExtractor(page).extract_interactive_elements()
+            return view_signature(page.url, elements)
+        except Exception as e:
+            logger.warning(f"Could not capture post-action view signature: {e}")
+            return None
+
+    @staticmethod
+    def _signature_after(result: ActionResult, state: AgentState) -> Optional[str]:
+        """The viewport as the previous step left it, falling back to the iteration's."""
+        return result.metadata.get("view_signature_after") or state.view_signature
 
     async def _run_vision_fallback(
         self,
@@ -228,9 +354,14 @@ class ReasoningAgent:
             return previous_result
 
         vision_action = action.model_copy(update={"x": vision_json["x"], "y": vision_json["y"]})
-        result = await executor.execute(vision_action)
-        result.screenshot_path = screenshot_path
-        return result
+        return await self._execute_step(
+            executor,
+            vision_action,
+            state,
+            "vision_fallback",
+            self._signature_after(previous_result, state),
+            screenshot_path,
+        )
 
     async def _record_result(self, result: ActionResult, iteration: int):
         if result.action == "extract" and result.success:

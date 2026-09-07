@@ -10,6 +10,7 @@ class ActionResult(BaseModel):
 
     success: bool
     action: str
+    step_id: Optional[str] = None
     target: Optional[str] = None
     value: Optional[Any] = None
     error: Optional[str] = None
@@ -26,8 +27,15 @@ class AgentState(BaseModel):
     user_query: str
     iteration: int
     current_url: str
+    page_key: Optional[str] = None
+    view_signature: Optional[str] = None
+    # Kept so a step can record what its pw-id target actually was. Indices do
+    # not survive to the next run; the element's descriptor does.
+    elements: List[Dict[str, Any]] = Field(default_factory=list)
     page_context: str
     memory_context: str
+    # What memory recalled about this page, already rendered for the prompt.
+    recalled_context: str = ""
     semantic_memory: List[str] = Field(default_factory=list)
     last_action: Optional[AgentAction] = None
     last_result: Optional[ActionResult] = None
