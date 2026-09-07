@@ -1,21 +1,38 @@
-import json
-import os
 import base64
 import asyncio
+import json
+import os
+from pathlib import Path
+
 from loguru import logger
-from pydantic import BaseModel
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
+from pydantic import BaseModel
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
+DEFAULT_MODEL = "qwen/qwen3.8-27b"
+RETIRED_MODEL_REPLACEMENTS = {
+    "llama-3.3-70b-versatile": DEFAULT_MODEL,
+}
+
 
 class LLMClient:
     def __init__(self, model_name: str = None, max_retries: int = 3):
         self.api_key = os.getenv("GROQ_API_KEY")
-        self.model_name = model_name or os.getenv("MODEL_NAME", "qwen/qwen3.8-27b")
-        self.vision_model_name = os.getenv("VISION_MODEL_NAME")
+        configured_model = (model_name or os.getenv("MODEL_NAME") or DEFAULT_MODEL).strip()
+        self.model_name = RETIRED_MODEL_REPLACEMENTS.get(configured_model, configured_model)
+        self.vision_model_name = (os.getenv("VISION_MODEL_NAME") or "").strip() or None
         self.max_retries = max_retries
         self.client = None
+
+        if configured_model != self.model_name:
+            logger.warning(
+                f"Groq model '{configured_model}' is retired or unavailable; "
+                f"using '{self.model_name}' instead."
+            )
+        model_source = "CLI" if model_name else ("environment" if os.getenv("MODEL_NAME") else "default")
+        logger.info(f"Configured Groq text model: {self.model_name} (source: {model_source})")
         
         if not self.api_key:
             logger.warning("GROQ_API_KEY not found in environment.")
@@ -73,7 +90,7 @@ class LLMClient:
 
     async def generate_vision_json(self, image_path: str, prompt: str) -> dict:
         """
-        Sends a screenshot to the Vision LLM (llama-3.2-90b-vision-preview) and requests JSON response.
+        Sends a screenshot to the configured Vision LLM and requests a JSON response.
         """
         logger.info("Generating Vision fallback coordinates with Groq Vision...")
         if not self.is_configured:

@@ -1,12 +1,14 @@
 import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from agents.goal_verifier import GoalVerifier
 from agents.recovery_policy import RecoveryPolicy
 from agents.step_verifier import StepVerifier
 from browser.actions import BrowserExecutor
 from context.context_builder import ContextBuilder
+from llm.llm_client import DEFAULT_MODEL, LLMClient
 from memory.graph import NavigationGraph
 from memory.history import MemoryState
 from memory.signature import (
@@ -38,6 +40,25 @@ class FakeLLMClient:
 
     async def generate_json(self, system_prompt, user_prompt):
         return self.response
+
+
+class LLMClientConfigurationTests(unittest.TestCase):
+    def test_retired_cli_model_is_replaced(self):
+        with patch.dict("os.environ", {"GROQ_API_KEY": "test-key"}, clear=True):
+            client = LLMClient(model_name="llama-3.3-70b-versatile")
+
+        self.assertEqual(client.model_name, DEFAULT_MODEL)
+
+    def test_blank_environment_model_uses_default(self):
+        with patch.dict(
+            "os.environ",
+            {"GROQ_API_KEY": "test-key", "MODEL_NAME": "", "VISION_MODEL_NAME": ""},
+            clear=True,
+        ):
+            client = LLMClient()
+
+        self.assertEqual(client.model_name, DEFAULT_MODEL)
+        self.assertIsNone(client.vision_model_name)
 
 
 class RecoveryPolicyTests(unittest.TestCase):
