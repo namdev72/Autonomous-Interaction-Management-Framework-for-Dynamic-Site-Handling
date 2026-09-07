@@ -5,6 +5,6 @@ fastapi
 uvicorn
 openai
 loguru
-chromadb
+chromadb>=1.5.9,<2
 pydantic
 python-dotenv
