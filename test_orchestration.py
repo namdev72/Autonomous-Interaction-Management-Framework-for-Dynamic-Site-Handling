@@ -11,6 +11,7 @@ from context.context_builder import ContextBuilder
 from llm.llm_client import DEFAULT_MODEL, LLMClient
 from memory.graph import NavigationGraph
 from memory.history import MemoryState
+from agents.task_planner import TaskPlanner
 from memory.signature import (
     descriptor_for_target, element_descriptor, normalize_url, page_key,
     target_for_descriptor, view_signature,
@@ -59,6 +60,37 @@ class LLMClientConfigurationTests(unittest.TestCase):
 
         self.assertEqual(client.model_name, DEFAULT_MODEL)
         self.assertIsNone(client.vision_model_name)
+
+
+class TaskPlannerTests(unittest.TestCase):
+    def setUp(self):
+        self.planner = TaskPlanner()
+
+    def test_ambiguous_amazon_region_requires_clarification(self):
+        plan = self.planner.plan("compare iphone 16 prices on amazon")
+
+        self.assertTrue(plan.needs_clarification)
+        self.assertEqual(plan.clarification_options, ["Amazon India (INR)", "Amazon US (USD)"])
+
+    def test_indian_amazon_request_uses_whitelisted_site(self):
+        plan = self.planner.plan("compare iphone 16 prices on amazon india")
+
+        self.assertFalse(plan.needs_clarification)
+        self.assertEqual(plan.preferred_sites, ["amazon_in"])
+        self.assertEqual(plan.currency, "INR")
+
+    def test_flight_request_without_site_asks_for_preference(self):
+        plan = self.planner.plan("check ticket price for a flight from Delhi to London")
+
+        self.assertTrue(plan.needs_clarification)
+        self.assertIn("flight website", plan.clarification_question)
+
+    def test_comparison_extracts_constraints(self):
+        plan = self.planner.plan("compare iphone 16 across amazon india and flipkart with at least 4.5 star rating")
+
+        self.assertEqual(plan.task_type, "compare")
+        self.assertEqual(plan.preferred_sites, ["amazon_in", "flipkart_in"])
+        self.assertEqual(plan.constraints["minimum_rating"], "4.5")
 
 
 class RecoveryPolicyTests(unittest.TestCase):
