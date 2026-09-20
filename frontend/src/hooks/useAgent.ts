@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from 'react';
 
-export type AgentStatus = 'IDLE' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'STOPPED';
+export type AgentStatus = 'IDLE' | 'RUNNING' | 'WAITING_FOR_USER' | 'COMPLETED' | 'FAILED' | 'STOPPED';
 
 export interface AgentEvent {
   type: string;
@@ -12,6 +12,7 @@ export function useAgent() {
   const [status, setStatus] = useState<AgentStatus>('IDLE');
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [result, setResult] = useState<any>(null);
+  const [clarification, setClarification] = useState<{ question: string; options: string[] } | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const sessionIdRef = useRef<string | null>(null);
 
@@ -20,6 +21,7 @@ export function useAgent() {
       setStatus('RUNNING');
       setEvents([]);
       setResult(null);
+      setClarification(null);
 
       // Start the task on the backend
       const res = await fetch('http://localhost:8000/api/agent/run', {
@@ -41,6 +43,14 @@ export function useAgent() {
         const parsedEvent: AgentEvent = JSON.parse(event.data);
         setEvents((prev) => [...prev, parsedEvent]);
 
+        if (parsedEvent.type === 'user_input_required') {
+          setStatus('WAITING_FOR_USER');
+          setClarification({
+            question: parsedEvent.data?.question || 'Please provide more information.',
+            options: parsedEvent.data?.options || [],
+          });
+        }
+
         // Automatically handle status changes based on specific events
         if (parsedEvent.type === 'agent_completed') {
           setStatus('COMPLETED');
@@ -58,6 +68,23 @@ export function useAgent() {
         }
       };
 
+    } catch (err) {
+      console.error(err);
+      setStatus('FAILED');
+    }
+  }, []);
+
+  const respondToAgent = useCallback(async (answer: string) => {
+    if (!sessionIdRef.current || !answer.trim()) return;
+    setClarification(null);
+    setStatus('RUNNING');
+    try {
+      const res = await fetch(`http://localhost:8000/api/agent/respond/${sessionIdRef.current}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ answer }),
+      });
+      if (!res.ok) throw new Error('Failed to submit clarification');
     } catch (err) {
       console.error(err);
       setStatus('FAILED');
@@ -84,9 +111,10 @@ export function useAgent() {
     if (status !== 'RUNNING') {
       setEvents([]);
       setResult(null);
+      setClarification(null);
       setStatus('IDLE');
     }
   }, [status]);
 
-  return { status, events, result, startAgent, stopAgent, clear };
+  return { status, events, result, clarification, startAgent, respondToAgent, stopAgent, clear };
 }

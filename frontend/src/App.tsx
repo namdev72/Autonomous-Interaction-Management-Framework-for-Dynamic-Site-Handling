@@ -3,10 +3,11 @@ import { ActivityLog } from './components/ActivityLog';
 import { AgentStatusDisplay } from './components/AgentStatusDisplay';
 import { ResultPanel } from './components/ResultPanel';
 import { useAgent } from './hooks/useAgent';
+import { ClarificationPanel } from './components/ClarificationPanel';
 import { Bot } from 'lucide-react';
 
 function App() {
-  const { status, events, result, startAgent, stopAgent, clear } = useAgent();
+  const { status, events, result, clarification, startAgent, respondToAgent, stopAgent, clear } = useAgent();
 
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col p-4 md:p-8">
@@ -34,6 +35,14 @@ function App() {
             onClear={clear} 
             status={status} 
           />
+
+          {clarification && (
+            <ClarificationPanel
+              question={clarification.question}
+              options={clarification.options}
+              onSubmit={respondToAgent}
+            />
+          )}
           
           <ResultPanel result={result} />
         </div>

@@ -1,4 +1,5 @@
-import { useState, KeyboardEvent } from 'react';
+import { useState } from 'react';
+import type { KeyboardEvent } from 'react';
 import { Play, Square, Trash2 } from 'lucide-react';
 import type { AgentStatus } from '../hooks/useAgent';
 

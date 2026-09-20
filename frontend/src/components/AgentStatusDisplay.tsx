@@ -6,7 +6,13 @@ import { twMerge } from 'tailwind-merge';
 export function AgentStatusDisplay({ status }: { status: AgentStatus }) {
   const cn = (...inputs: (string | undefined | null | false)[]) => twMerge(clsx(inputs));
 
-  const statusConfig = {
+  const statusConfig: Record<AgentStatus, {
+    icon: typeof Loader2;
+    text: string;
+    color: string;
+    bg: string;
+    spin?: boolean;
+  }> = {
     IDLE: {
       icon: PlayCircle,
       text: 'Ready to Run',
@@ -37,6 +43,12 @@ export function AgentStatusDisplay({ status }: { status: AgentStatus }) {
       text: 'Agent Stopped',
       color: 'text-yellow-400',
       bg: 'bg-yellow-900/20',
+    },
+    WAITING_FOR_USER: {
+      icon: PauseCircle,
+      text: 'Waiting for your answer',
+      color: 'text-amber-400',
+      bg: 'bg-amber-900/20',
     },
   };
 
