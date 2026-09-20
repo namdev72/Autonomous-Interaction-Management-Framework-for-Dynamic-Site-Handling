@@ -52,9 +52,10 @@ class ReasoningAgent:
         headless: bool = False,
         max_iterations: int = 15,
         model_name: Optional[str] = None,
+        allowed_hosts: Optional[set[str]] = None,
         on_event: Optional[Callable[[str, dict], Awaitable[None]]] = None,
     ):
-        self.browser_controller = BrowserController(headless=headless)
+        self.browser_controller = BrowserController(headless=headless, allowed_hosts=allowed_hosts)
         self.llm_client = LLMClient(model_name=model_name)
         self.intent_parser = IntentParser(self.llm_client)
         self.context_builder = ContextBuilder()
@@ -400,7 +401,7 @@ class ReasoningAgent:
                 return AgentRunResult(completed=False, iterations=0, reason="initial_navigation_failed")
 
             await self.browser_controller.wait_for_load()
-            executor = BrowserExecutor(self.browser_controller.page)
+            executor = BrowserExecutor(self.browser_controller.page, self.browser_controller.allowed_hosts)
 
             for iterations in range(1, self.max_iterations + 1):
                 logger.info(f"--- Iteration {iterations} ---")

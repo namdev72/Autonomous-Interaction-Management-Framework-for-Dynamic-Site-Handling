@@ -13,6 +13,9 @@ from loguru import logger
 
 # Import the existing agent architecture
 from agents.reasoning_agent import ReasoningAgent
+from agents.task_planner import TaskPlanner
+from models.task_models import TaskPlan
+from sites.registry import allowed_hosts
 
 # Configure loguru for FastAPI
 logger.remove()
@@ -30,10 +33,13 @@ app.add_middleware(
 )
 
 class AgentSession:
-    def __init__(self):
+    def __init__(self, query: str):
         self.id = uuid.uuid4().hex
         self.queue = asyncio.Queue()
         self.task: Optional[asyncio.Task] = None
+        self.query = query
+        self.plan: Optional[TaskPlan] = None
+        self.waiting_for_user = False
         
     async def enqueue_event(self, event_type: str, data: dict):
         # We wrap the underlying agent events into a unified structure
@@ -49,51 +55,95 @@ sessions: Dict[str, AgentSession] = {}
 class RunRequest(BaseModel):
     query: str
 
-@app.post("/api/agent/run")
-async def start_agent(req: RunRequest):
-    session = AgentSession()
-    sessions[session.id] = session
-    
-    # Define the callback that bridges the ReasoningAgent events to our WebSocket queue
+
+class UserResponse(BaseModel):
+    answer: str
+
+
+planner = TaskPlanner()
+
+
+async def _run_agent(session: AgentSession, query: str, plan: TaskPlan):
     async def on_event(event_type: str, data: dict):
         import datetime
         event_obj = {
             "type": event_type,
             "timestamp": datetime.datetime.now().isoformat(),
-            "data": data
+            "data": data,
         }
         await session.queue.put(event_obj)
-        # Also print to terminal
         if event_type == "log":
             print(f"[{event_type}] {data.get('level')} - {data.get('message')}")
         else:
             print(f"[{event_type}] {data}")
 
-    # Initialize the agent. headless=False ensures the browser is visible!
     agent = ReasoningAgent(
         headless=False,
         max_iterations=20,
-        on_event=on_event
+        allowed_hosts=allowed_hosts(),
+        on_event=on_event,
     )
-    
-    async def agent_task_runner():
-        try:
-            await on_event("agent_started", {"message": "Agent execution starting..."})
-            result = await agent.execute_task(req.query)
-            await on_event("agent_completed", {"result": result.model_dump()})
-        except asyncio.CancelledError:
-            await on_event("agent_stopped", {"message": "Agent execution was cancelled by user."})
-        except Exception as e:
-            logger.exception("Agent execution failed")
-            await on_event("error", {"message": str(e)})
-        finally:
-            # Send a sentinel to close the queue gracefully
-            await session.queue.put(None)
-            
-    # Start execution in the background
-    session.task = asyncio.create_task(agent_task_runner())
+    try:
+        await on_event("agent_started", {"message": "Agent execution starting...", "plan": plan.model_dump()})
+        result = await agent.execute_task(query)
+        await on_event("agent_completed", {"result": result.model_dump()})
+    except asyncio.CancelledError:
+        await on_event("agent_stopped", {"message": "Agent execution was cancelled by user."})
+    except Exception as e:
+        logger.exception("Agent execution failed")
+        await on_event("error", {"message": str(e)})
+    finally:
+        await session.queue.put(None)
+
+@app.post("/api/agent/run")
+async def start_agent(req: RunRequest):
+    session = AgentSession(req.query)
+    sessions[session.id] = session
+
+    plan = planner.plan(req.query)
+    session.plan = plan
+    if plan.needs_clarification:
+        session.waiting_for_user = True
+        await session.queue.put({
+            "type": "user_input_required",
+            "timestamp": __import__("datetime").datetime.now().isoformat(),
+            "data": {
+                "question": plan.clarification_question,
+                "options": plan.clarification_options,
+                "field": "site_or_region",
+            },
+        })
+        return {"session_id": session.id, "status": "waiting_for_user"}
+
+    session.task = asyncio.create_task(_run_agent(session, req.query, plan))
     
     return {"session_id": session.id}
+
+
+@app.post("/api/agent/respond/{session_id}")
+async def respond_to_agent(session_id: str, response: UserResponse):
+    session = sessions.get(session_id)
+    if not session or not session.waiting_for_user:
+        return {"status": "not_waiting"}
+
+    clarified_query = f"{session.query}\nUser clarification: {response.answer}"
+    plan = planner.plan(session.query, response.answer)
+    session.plan = plan
+    if plan.needs_clarification:
+        await session.queue.put({
+            "type": "user_input_required",
+            "timestamp": __import__("datetime").datetime.now().isoformat(),
+            "data": {
+                "question": plan.clarification_question,
+                "options": plan.clarification_options,
+                "field": "site_or_region",
+            },
+        })
+        return {"status": "waiting_for_user"}
+
+    session.waiting_for_user = False
+    session.task = asyncio.create_task(_run_agent(session, clarified_query, plan))
+    return {"status": "started"}
 
 @app.post("/api/agent/stop/{session_id}")
 async def stop_agent(session_id: str):

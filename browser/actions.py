@@ -1,12 +1,20 @@
 from playwright.async_api import Page
+from urllib.parse import urlsplit
 from models.action_models import AgentAction
 from models.orchestration_models import ActionResult
 from loguru import logger
 import asyncio
 
 class BrowserExecutor:
-    def __init__(self, page: Page):
+    def __init__(self, page: Page, allowed_hosts=None):
         self.page = page
+        self.allowed_hosts = allowed_hosts
+
+    def _is_allowed_url(self, url: str) -> bool:
+        if self.allowed_hosts is None:
+            return True
+        parsed = urlsplit(url)
+        return parsed.scheme in {"http", "https"} and parsed.hostname in self.allowed_hosts
 
     def _result(
         self,
@@ -58,6 +66,8 @@ class BrowserExecutor:
                 if not action.value:
                     logger.error("Navigate action missing 'value' URL.")
                     return self._result(action, False, error="Navigate action missing value URL.", recovery_hint="ask_llm_for_url", url_before=url_before)
+                if not self._is_allowed_url(action.value):
+                    return self._result(action, False, error="Navigation target is not whitelisted.", recovery_hint="choose_approved_site", url_before=url_before)
                 await self.page.goto(action.value, wait_until="load", timeout=30000)
                 return self._result(action, True, url_before=url_before)
                 
