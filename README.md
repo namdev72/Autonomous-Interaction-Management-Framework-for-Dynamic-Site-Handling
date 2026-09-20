@@ -13,6 +13,9 @@ An autonomous browser-agent framework that translates natural language instructi
 - Verified completion: `done` actions are checked against the original user goal before stopping.
 - Semantic memory indexing with ChromaDB for current-session page context recall.
 - Optional vision fallback for coordinate-based click recovery.
+- Deterministic task planning with approved-site and region clarification.
+- Public product comparison for Amazon India, Amazon US, and Flipkart.
+- Interactive follow-up questions over the WebSocket session.
 
 ## Architecture
 
@@ -37,6 +40,11 @@ React Frontend (Vite)
    - Builds compact context (DOM + recent semantic memory) and sends it to the LLM.
    - Decides the next structured action (`AgentAction`).
    - Executes the action via Playwright, applies automatic recovery for failures, and repeats until the goal is verified as `done`.
+4. **Comparison Flow**:
+   - Classifies the task and asks for an Amazon region or preferred site when needed.
+   - Builds deterministic URLs only for approved domains.
+   - Extracts public product offers into a common schema and ranks them by price and constraints.
+   - Stops at login or human verification pages and reports the required user handoff; it does not bypass those controls.
 
 ## Installation
 
@@ -105,6 +113,20 @@ Useful runtime flags:
 ```bash
 python main.py --headless --max-iterations 20 --model qwen/qwen3.8-27b "open wikipedia and search for Samsung"
 ```
+
+### Interactive comparison examples
+
+Use the Web UI for requests such as:
+
+```text
+compare iPhone 16 prices on Amazon India and Flipkart
+compare iPhone 16 prices on Amazon
+check ticket price for a flight from Delhi to London
+```
+
+The UI asks a follow-up when the Amazon region or a preferred flight website is ambiguous. Comparison runs use approved public-site adapters and return normalized offers, price, rating, source URL, and warnings.
+
+The current approved sites are Amazon India, Amazon US, Flipkart, and Google Flights. Site policy is defined in `sites/registry.py`; adding a domain requires an explicit policy and adapter.
 
 ## Tests
 
