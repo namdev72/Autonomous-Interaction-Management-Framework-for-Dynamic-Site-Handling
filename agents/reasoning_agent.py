@@ -424,6 +424,9 @@ class ReasoningAgent:
                     verified = await self.goal_verifier.verify(user_query, state.page_context, state.memory_context)
                     if verified:
                         await self._emit_log("Goal verified as complete.", "success")
+                        last_result = await self._execute_with_recovery(executor, action, state)
+                        self.memory.add_result(last_result)
+                        self.memory.save_state()
                         return AgentRunResult(
                             completed=True,
                             iterations=iterations,

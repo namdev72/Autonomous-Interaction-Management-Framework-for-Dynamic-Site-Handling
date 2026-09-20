@@ -292,10 +292,11 @@ class MemoryState:
             return []
         
     def detect_loop(self) -> bool:
-        if len(self.actions_history) < 3:
+        llm_steps = [s for s in self.steps_history if s.origin == "llm"]
+        if len(llm_steps) < 3:
             return False
         
-        last_3 = self.actions_history[-3:]
+        last_3 = [s.action for s in llm_steps[-3:]]
         first = last_3[0]
         for a in last_3[1:]:
             if a.action != first.action or a.target != first.target or a.value != first.value:
@@ -304,17 +305,17 @@ class MemoryState:
         
     def get_context_string(self) -> str:
         """Returns a string representation of recent history for the LLM prompt."""
-        recent_actions = self.actions_history[-5:] # Last 5 actions
-        history_strs = [f"- {a.action} on {a.target} (Reason: {a.reasoning})" for a in recent_actions]
-        
-        context = "Recent Actions Taken:\n" + ("\n".join(history_strs) if history_strs else "None")
-        recent_results = self.results_history[-3:]
-        if recent_results:
-            result_strs = [
-                f"- {r.action} success={r.success} target={r.target} error={r.error} url={r.url_after}"
-                for r in recent_results
-            ]
-            context += "\n\nRecent Action Results:\n" + "\n".join(result_strs)
+        recent_steps = self.steps_history[-5:]
+        if not recent_steps:
+            history_str = "None"
+        else:
+            strs = []
+            for s in recent_steps:
+                error_msg = f" (Error: {s.result.error})" if not s.result.success else ""
+                strs.append(f"- [{s.origin.upper()}] {s.action.action} on {s.action.target} -> success={s.result.success}{error_msg}")
+            history_str = "\n".join(strs)
+
+        context = "Recent Execution History:\n" + history_str
         if self.extracted_data:
             context += f"\n\nExtracted Data So Far:\n{self.extracted_data}"
         return context
