@@ -13,8 +13,10 @@ from loguru import logger
 
 # Import the existing agent architecture
 from agents.reasoning_agent import ReasoningAgent
+from agents.answer_composer import compose_comparison_answer
 from agents.task_planner import TaskPlanner
 from models.task_models import TaskPlan
+from sites.adapters import compare_sites
 from sites.registry import allowed_hosts
 
 # Configure loguru for FastAPI
@@ -85,6 +87,18 @@ async def _run_agent(session: AgentSession, query: str, plan: TaskPlan):
     )
     try:
         await on_event("agent_started", {"message": "Agent execution starting...", "plan": plan.model_dump()})
+        if plan.task_type == "compare":
+            await on_event("log", {"level": "info", "message": f"Comparing approved sites: {', '.join(plan.candidate_sites)}"})
+            comparison = await compare_sites(plan)
+            answer = compose_comparison_answer(plan, comparison)
+            await on_event("agent_completed", {"result": {
+                "completed": True,
+                "iterations": 1,
+                "reason": "comparison_complete",
+                "extracted_data": answer,
+                "last_url": None,
+            }})
+            return
         result = await agent.execute_task(query)
         await on_event("agent_completed", {"result": result.model_dump()})
     except asyncio.CancelledError:

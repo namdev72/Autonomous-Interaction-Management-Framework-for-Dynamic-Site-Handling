@@ -1,5 +1,6 @@
 export function ResultPanel({ result }: { result: any }) {
   if (!result) return null;
+  const comparison = result.extracted_data?.answer ? result.extracted_data : null;
 
   return (
     <div className="flex flex-col gap-3 p-6 bg-slate-900 rounded-xl shadow-lg border border-slate-800 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -10,6 +11,32 @@ export function ResultPanel({ result }: { result: any }) {
       </div>
 
       <div className="space-y-4 pt-2">
+        {comparison && (
+          <div className="p-4 bg-slate-950 rounded border border-slate-800">
+            <span className="block text-slate-500 mb-3 uppercase text-xs font-semibold tracking-wider">Answer</span>
+            <p className="text-slate-200 whitespace-pre-wrap">{comparison.answer}</p>
+            {comparison.offers?.length > 0 && (
+              <div className="mt-4 overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="text-slate-500 border-b border-slate-800">
+                    <tr><th className="py-2 pr-3">Site</th><th className="py-2 pr-3">Product</th><th className="py-2 pr-3">Price</th><th className="py-2">Rating</th></tr>
+                  </thead>
+                  <tbody>
+                    {comparison.offers.map((offer: any) => (
+                      <tr key={`${offer.site}-${offer.product_url}`} className="border-b border-slate-900 text-slate-300">
+                        <td className="py-2 pr-3">{offer.site}</td>
+                        <td className="py-2 pr-3 max-w-xs">{offer.title}</td>
+                        <td className="py-2 pr-3 whitespace-nowrap">{offer.currency} {offer.price?.toLocaleString()}</td>
+                        <td className="py-2">{offer.rating ?? 'N/A'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div className="p-3 bg-slate-950 rounded border border-slate-800">
             <span className="block text-slate-500 mb-1 uppercase text-xs font-semibold tracking-wider">Status</span>

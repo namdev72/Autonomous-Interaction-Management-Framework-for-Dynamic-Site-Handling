@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from agents.answer_composer import compose_comparison_answer
 from agents.goal_verifier import GoalVerifier
 from agents.recovery_policy import RecoveryPolicy
 from agents.step_verifier import StepVerifier
@@ -91,6 +92,34 @@ class TaskPlannerTests(unittest.TestCase):
         self.assertEqual(plan.task_type, "compare")
         self.assertEqual(plan.preferred_sites, ["amazon_in", "flipkart_in"])
         self.assertEqual(plan.constraints["minimum_rating"], "4.5")
+
+
+class ComparisonAnswerTests(unittest.TestCase):
+    def test_answer_ranks_matching_offers_by_price(self):
+        plan = TaskPlanner().plan("compare iphone 16 prices on amazon india")
+        results = [
+            {
+                "site": "amazon_in",
+                "status": "completed",
+                "offers": [
+                    {"site": "amazon_in", "title": "iPhone 16", "product_url": "https://example/1", "price": 64999, "currency": "INR", "rating": 4.2, "source_timestamp": "now"},
+                    {"site": "amazon_in", "title": "iPhone 16 Pro", "product_url": "https://example/2", "price": 89999, "currency": "INR", "rating": 4.5, "source_timestamp": "now"},
+                ],
+                "warnings": [],
+            }
+        ]
+
+        from models.task_models import SiteRunResult, ProductOffer
+        typed_results = [SiteRunResult(
+            site=item["site"],
+            status=item["status"],
+            offers=[ProductOffer(**offer) for offer in item["offers"]],
+            warnings=item["warnings"],
+        ) for item in results]
+        answer = compose_comparison_answer(plan, typed_results)
+
+        self.assertIn("Lowest matching price: INR 64,999.00", answer["answer"])
+        self.assertEqual(answer["offers"][0]["price"], 64999)
 
 
 class RecoveryPolicyTests(unittest.TestCase):

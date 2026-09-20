@@ -61,4 +61,6 @@ def classify_sites(query: str) -> List[str]:
     for alias, key in sorted(ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
         if alias in lowered and key not in selected:
             selected.append(key)
+    if "amazon_us" in selected:
+        selected = [key for key in selected if key != "amazon_in"]
     return selected
