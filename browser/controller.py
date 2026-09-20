@@ -39,7 +39,7 @@ class BrowserController:
         if self.page:
             try:
                 # Wait briefly for network to settle, but don't fail if trackers keep it busy
-                await self.page.wait_for_load_state("networkidle", timeout=5000)
+                await self.page.wait_for_load_state("networkidle", timeout=2000)
             except Exception:
                 pass
 

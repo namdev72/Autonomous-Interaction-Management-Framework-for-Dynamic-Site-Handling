@@ -445,7 +445,7 @@ class ReasoningAgent:
                     last_result.screenshot_path = screenshot_path
 
                 await self.browser_controller.wait_for_load()
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.1)
 
             await self._emit_log("Reached maximum iterations before achieving the goal.", "warning")
             return AgentRunResult(
@@ -457,8 +457,8 @@ class ReasoningAgent:
             )
         finally:
             if self.browser_controller.page:
-                await self._emit_log("Task execution finished. Keeping browser open for 5 seconds for visual inspection.")
-                await asyncio.sleep(5)
+                await self._emit_log("Task execution finished. Keeping browser open for 1 seconds for visual inspection.")
+                await asyncio.sleep(1)
             else:
                 await self._emit_log("Task execution finished.")
             await self.browser_controller.close_browser()

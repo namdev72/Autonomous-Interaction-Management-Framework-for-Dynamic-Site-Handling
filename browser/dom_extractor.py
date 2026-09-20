@@ -18,10 +18,11 @@ class DOMExtractor:
         () => {
             function isVisible(el) {
                 if (!el) return false;
+                const rect = el.getBoundingClientRect();
+                if (rect.width === 0 || rect.height === 0) return false;
                 const style = window.getComputedStyle(el);
                 if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-                const rect = el.getBoundingClientRect();
-                return rect.width > 0 && rect.height > 0;
+                return true;
             }
 
             function isInViewport(el) {
@@ -100,9 +101,9 @@ class DOMExtractor:
             }
 
             const elements = getInteractiveElements(document);
-            const result = [];
-            let counter = 0;
             
+            // READ PHASE: Filter elements without mutating the DOM to prevent layout thrashing
+            const validElements = [];
             elements.forEach((el) => {
                 if (isVisible(el) && isInViewport(el) && !el.disabled && !isObscured(el)) {
                     const tag = el.tagName.toLowerCase();
@@ -114,46 +115,55 @@ class DOMExtractor:
                         }
                     }
                     
-                    // Skip if it's a child of another interactive element (unless it's an input/button/select/textarea)
+                    // Skip if it's a child of another interactive element
                     if (isChildOfInteractive(el)) {
                         if (tag !== 'input' && tag !== 'button' && tag !== 'select' && tag !== 'textarea') {
                             return;
                         }
                     }
                     
-                    // Inject ID into the DOM element itself so Playwright can find it later
-                    const uniqueId = `pw-id-${counter}`;
-                    el.setAttribute('data-playwright-id', uniqueId);
-                    
-                    const item = {
-                        playwright_index: uniqueId,
-                        tag: tag,
-                        text: (el.innerText || el.value || '').trim().replace(/\\n/g, ' ').substring(0, 100), // Truncate slightly more to save tokens
-                        placeholder: el.getAttribute('placeholder') || '',
-                        id: el.id || '',
-                        className: el.className || '',
-                        aria_label: el.getAttribute('aria-label') || '',
-                        role: el.getAttribute('role') || '',
-                        href: el.getAttribute('href') || '',
-                        type: el.getAttribute('type') || ''
-                    };
-                    
-                    // Only keep elements that have some actionable or identifiable property
-                    if (item.text || item.placeholder || item.aria_label || item.id || item.role || item.href) {
-                         // Clean up empty fields
-                         Object.keys(item).forEach(key => {
-                             if (item[key] === '' || item[key] === null) {
-                                 delete item[key];
-                             }
-                         });
-                         result.push(item);
-                         counter++;
-                    } else {
-                         // Remove the attribute if we didn't include it
-                         el.removeAttribute('data-playwright-id');
-                    }
+                    validElements.push({ el, tag });
                 }
             });
+
+            // WRITE PHASE: Mutate DOM safely and collect results
+            const result = [];
+            let counter = 0;
+            
+            validElements.forEach(({ el, tag }) => {
+                // Inject ID into the DOM element itself so Playwright can find it later
+                const uniqueId = `pw-id-${counter}`;
+                el.setAttribute('data-playwright-id', uniqueId);
+                
+                const item = {
+                    playwright_index: uniqueId,
+                    tag: tag,
+                    text: (el.innerText || el.value || '').trim().replace(/\\n/g, ' ').substring(0, 100), // Truncate slightly more to save tokens
+                    placeholder: el.getAttribute('placeholder') || '',
+                    id: el.id || '',
+                    className: el.className || '',
+                    aria_label: el.getAttribute('aria-label') || '',
+                    role: el.getAttribute('role') || '',
+                    href: el.getAttribute('href') || '',
+                    type: el.getAttribute('type') || ''
+                };
+                
+                // Only keep elements that have some actionable or identifiable property
+                if (item.text || item.placeholder || item.aria_label || item.id || item.role || item.href) {
+                     // Clean up empty fields
+                     Object.keys(item).forEach(key => {
+                         if (item[key] === '' || item[key] === null) {
+                             delete item[key];
+                         }
+                     });
+                     result.push(item);
+                     counter++;
+                } else {
+                     // Remove the attribute if we didn't include it
+                     el.removeAttribute('data-playwright-id');
+                }
+            });
+            
             return result;
         }
         """

@@ -16,67 +16,92 @@ An autonomous browser-agent framework that translates natural language instructi
 
 ## Architecture
 
+The project features a decoupled architecture with a React-based web interface communicating with a Python FastAPI backend, which orchestrates the autonomous browser agent.
+
 ```text
-main.py
-  -> agents.reasoning_agent.ReasoningAgent
-    -> llm.intent_parser.IntentParser
-    -> browser.controller.BrowserController
-    -> browser.dom_extractor.DOMExtractor
-    -> context.context_builder.ContextBuilder
-    -> llm.llm_client.LLMClient
-    -> browser.actions.BrowserExecutor
-    -> agents.recovery_policy.RecoveryPolicy
-    -> agents.goal_verifier.GoalVerifier
-    -> memory.history.MemoryState
+React Frontend (Vite)
+  └── WebSockets & REST
+       └── FastAPI Backend (server.py)
+            └── agents.reasoning_agent.ReasoningAgent
+                 ├── browser.controller.BrowserController (Playwright)
+                 ├── llm.llm_client.LLMClient (Groq LLM)
+                 ├── memory.history.MemoryState (ChromaDB)
+                 └── context.context_builder.ContextBuilder
 ```
 
-The agent loop runs as:
-
-1. Parse the user intent and resolve a starting URL.
-2. Open the browser and wait for initial page load.
-3. Extract visible interactive elements from the page and frames.
-4. Build compact context for the LLM.
-5. Add recent actions, action results, extracted data, and semantic memory.
-6. Ask the LLM for the next structured `AgentAction`.
-7. Verify completion if the action is `done`.
-8. Execute the action through Playwright.
-9. Apply deterministic recovery or vision fallback if execution fails.
-10. Persist action/result memory and repeat until verified completion or max iterations.
+1. **Frontend**: A React/Vite web application that provides a real-time terminal-like interface. It sends tasks to the backend and listens to real-time agent execution logs via WebSockets.
+2. **Backend**: A FastAPI server (`server.py`) that initializes the agent session and handles the `asyncio` event loops required by Playwright and Uvicorn.
+3. **Agent Loop**:
+   - Parses the user intent and opens the target website.
+   - Extracts interactive DOM elements and injects `data-playwright-id` tags.
+   - Builds compact context (DOM + recent semantic memory) and sends it to the LLM.
+   - Decides the next structured action (`AgentAction`).
+   - Executes the action via Playwright, applies automatic recovery for failures, and repeats until the goal is verified as `done`.
 
 ## Installation
 
+You need both Python and Node.js installed on your system.
+
+### 1. Backend Setup (Python)
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+python -m venv venv
+.\venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 python -m playwright install chromium
 ```
 
 Create a `.env` file in the project root:
-
 ```env
 GROQ_API_KEY=your_groq_api_key_here
 MODEL_NAME=qwen/qwen3.8-27b
 VISION_MODEL_NAME=
 ```
 
+### 2. Frontend Setup (Node.js)
+Open a new terminal or use the same one:
+```powershell
+cd frontend
+npm install
+```
+
 ## Usage
 
-Interactive mode:
+You can run the project either through the full Web UI (recommended) or directly via the CLI.
 
+### Option A: Run with Web UI (Frontend + Backend)
+
+You will need two separate terminal windows.
+
+**Terminal 1: Start the Backend API**
+Make sure your virtual environment is activated, then run:
+```powershell
+python server.py
+```
+*(The backend will start on `http://localhost:8000`)*
+
+**Terminal 2: Start the Frontend UI**
+```powershell
+cd frontend
+npm run dev
+```
+*(The UI will be accessible at `http://localhost:5173`. Enter your task there to watch the agent work in real-time.)*
+
+### Option B: Run in CLI Mode
+
+If you prefer to run the agent headlessly or directly from the terminal without the UI:
+
+Interactive mode:
 ```bash
 python main.py
 ```
 
 Single task:
-
 ```bash
 python main.py "go to books.toscrape.com and extract the price of a light in the attic"
 ```
 
 Useful runtime flags:
-
 ```bash
 python main.py --headless --max-iterations 20 --model qwen/qwen3.8-27b "open wikipedia and search for Samsung"
 ```
