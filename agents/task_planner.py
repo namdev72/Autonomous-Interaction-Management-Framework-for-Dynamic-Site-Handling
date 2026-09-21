@@ -2,7 +2,7 @@ import re
 from typing import Optional
 
 from models.task_models import TaskPlan
-from sites.registry import classify_sites, policy_for
+from sites.registry import classify_sites, policy_for, supports_comparison
 
 
 class TaskPlanner:
@@ -38,6 +38,12 @@ class TaskPlanner:
 
         if not sites:
             sites = ["amazon_in", "flipkart_in"] if is_compare and not is_flight else ["amazon_in"]
+
+        # Comparisons read product cards, which only product sites have. Other
+        # sites (Google Flights) go to the browsing agent instead, which can
+        # use them, rather than a comparison that finds nothing.
+        if task_type == "compare" and not all(supports_comparison(policy_for(key)) for key in sites):
+            task_type = "search"
 
         country = policy_for(sites[0]).country
         currency = policy_for(sites[0]).currency or None

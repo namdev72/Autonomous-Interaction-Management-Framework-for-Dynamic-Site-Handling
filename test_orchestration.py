@@ -178,6 +178,35 @@ class ComparisonAnswerTests(unittest.TestCase):
         self.assertEqual(len(answer["offers"]), 2)
 
 
+class UnsupportedComparisonSiteTests(unittest.TestCase):
+    def test_flight_price_questions_go_to_the_agent(self):
+        for query, answer in (("find the cheapest flight from Delhi to London on google flights", None),
+                              ("cheapest flight from Delhi to London", "Google Flights")):
+            with self.subTest(query=query):
+                plan = TaskPlanner().plan(query, answer)
+                self.assertFalse(plan.needs_clarification)
+                self.assertEqual(plan.task_type, "search")
+                self.assertEqual(plan.preferred_sites, ["google_flights"])
+
+    def test_product_comparisons_are_unchanged(self):
+        plan = TaskPlanner().plan("compare iphone 16 across amazon india and flipkart")
+
+        self.assertEqual(plan.task_type, "compare")
+
+    def test_site_without_extractor_fails_without_opening_a_browser(self):
+        import asyncio
+        from sites.adapters import search_site
+        from sites.registry import policy_for
+
+        plan = TaskPlanner().plan("compare iphone 16 on amazon india")
+        with patch("sites.adapters.BrowserController", side_effect=AssertionError("browser opened")):
+            result = asyncio.run(search_site(policy_for("google_flights"), plan))
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.offers, [])
+        self.assertIn("not supported on Google Flights", result.warnings[0])
+
+
 class FakeController:
     """BrowserController stand-in whose navigation fails and whose close raises."""
 

@@ -124,6 +124,10 @@ async def _flipkart_offers(page, policy: SitePolicy, subject: str, limit: int = 
 
 
 async def search_site(policy: SitePolicy, task: TaskPlan) -> SiteRunResult:
+    if "product_search" not in policy.capabilities:
+        # No extractor for this site (see supports_comparison): opening it
+        # would always find nothing and still look like a successful run.
+        return SiteRunResult(site=policy.key, status="failed", warnings=[f"Price comparison is not supported on {policy.label}."])
     controller = BrowserController(headless=True, allowed_hosts=set(policy.domains))
     try:
         if not await controller.open_website(policy.build_search_url(task.subject)):
