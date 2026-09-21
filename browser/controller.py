@@ -6,7 +6,9 @@ from typing import Optional
 
 class BrowserController:
     def __init__(self, headless: bool = False, allowed_hosts: Optional[set[str]] = None):
-        self.headless = False  # FORCED: Ensure browser screen is always displayed
+        # Visible by default so runs can be watched; callers that need no
+        # window (comparison workers, --headless) pass headless=True.
+        self.headless = headless
         self.allowed_hosts = allowed_hosts
         self.playwright = None
         self.browser: Optional[Browser] = None
@@ -17,11 +19,14 @@ class BrowserController:
         logger.info("Launching browser...")
         self.playwright = await async_playwright().start()
         self.browser = await self.playwright.chromium.launch(
-            headless=False,
-            args=["--start-maximized", "--window-position=0,0"]
+            headless=self.headless,
+            args=["--window-position=0,0"],
         )
         self.context = await self.browser.new_context(
-            no_viewport=True,
+            # Fixed rather than screen-sized: the DOM extractor reads only the
+            # viewport, so a monitor-dependent size would change what the agent
+            # sees, and what memory recalls, from one machine to the next.
+            viewport={"width": 1280, "height": 800},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
         await self.context.add_init_script("""

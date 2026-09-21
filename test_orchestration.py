@@ -399,6 +399,14 @@ class GoalVerifierTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.confidence, 0.0)
 
 
+class BrowserControllerTests(unittest.TestCase):
+    def test_headless_setting_is_respected(self):
+        from browser.controller import BrowserController
+
+        self.assertTrue(BrowserController(headless=True).headless)
+        self.assertFalse(BrowserController().headless)
+
+
 class SignatureTests(unittest.TestCase):
     TRACKED = "https://www.amazon.com/s?k=iPhone+16&crid=2MUZMVD8M5O0F&ref=nb_sb_noss_1"
     CLEAN = "https://amazon.com/s?k=iPhone+16"
