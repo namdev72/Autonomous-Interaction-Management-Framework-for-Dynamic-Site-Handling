@@ -370,26 +370,27 @@ class FakeObserver:
 
 
 class CountingVerifier:
-    def __init__(self, statuses):
+    def __init__(self, statuses, answer_parts=()):
         self.statuses = list(statuses)
+        self.answer_parts = list(answer_parts)
         self.calls = 0
 
     async def verify(self, contract, state):
         from models.goal_models import VerificationResult
         self.calls += 1
-        return VerificationResult(status=self.statuses.pop(0), confidence=0.9)
+        return VerificationResult(status=self.statuses.pop(0), confidence=0.9, answer_parts=self.answer_parts)
 
 
 class GoalLoopTests(unittest.IsolatedAsyncioTestCase):
     """One iteration of the goal loop where the planner claims "done"."""
 
-    async def _run(self, states, statuses):
+    async def _run(self, states, statuses, answer_parts=(), extracted=None):
         from models.orchestration_models import AgentState, StepDecision
 
         agent = _test_agent(FailingIntentParser())
         agent.max_iterations = 1
-        agent.memory.extracted_data = {"Extraction_Iter_1": "₹69,900"}
-        agent.goal_verifier = CountingVerifier(statuses)
+        agent.memory.extracted_data = {"Extraction_Iter_1": "₹69,900"} if extracted is None else extracted
+        agent.goal_verifier = CountingVerifier(statuses, answer_parts)
 
         async def opened(url):
             return True
@@ -432,6 +433,37 @@ class GoalLoopTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(calls, 1)
         self.assertFalse(result.completed)
+
+    RESULTS_PAGE = dict(url="https://www.google.com/travel/flights", title="Delhi to Mumbai",
+                        visible_text=["One way", "Sep 22", "12:15 AM", "5:30 AM", "IndiGo", "1 stop", "₹5,985", "Air India", "₹6,249"])
+
+    async def test_goal_met_on_first_page_returns_the_verifiers_answer(self):
+        from models.goal_models import ObservedState
+        parts = ["IndiGo", "12:15 AM", "5:30 AM", "1 stop", "₹5,985", "One way", "Sep 22"]
+
+        result, _ = await self._run([ObservedState(**self.RESULTS_PAGE)], ["ACHIEVED"], answer_parts=parts, extracted={})
+
+        self.assertTrue(result.completed)
+        self.assertEqual(result.extracted_data, {"answer": "IndiGo · 12:15 AM · 5:30 AM · 1 stop · ₹5,985 · One way · Sep 22"})
+
+    async def test_answer_parts_not_on_the_page_are_dropped(self):
+        from models.goal_models import ObservedState
+        for parts in (["Vistara", "₹5,985"],             # wrong airline, real price
+                      ["IndiGo", "₹3,999"],              # real airline, invented price
+                      ["Cheapest: IndiGo at ₹5,985"]):   # model's own wording
+            with self.subTest(parts=parts):
+                result, _ = await self._run([ObservedState(**self.RESULTS_PAGE)], ["ACHIEVED"], answer_parts=parts, extracted={})
+
+                self.assertTrue(result.completed)
+                self.assertEqual(result.extracted_data, {})
+
+    async def test_answer_parts_match_despite_case_and_spacing(self):
+        from models.goal_models import ObservedState
+        page = dict(self.RESULTS_PAGE, visible_text=["Sep 24 – Oct 3", "Round trip"])
+
+        result, _ = await self._run([ObservedState(**page)], ["ACHIEVED"], answer_parts=["round trip", "Sep 24 – Oct 3"], extracted={})
+
+        self.assertEqual(result.extracted_data, {"answer": "round trip · Sep 24 – Oct 3"})
 
 
 class RecoveryPolicyTests(unittest.TestCase):
@@ -486,6 +518,21 @@ class GoalVerifierTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.status, "ACHIEVED")
         self.assertEqual(result.confidence, 0.9)
+
+    async def test_verifier_returns_the_answer_it_read(self):
+        verifier = GoalVerifier(FakeLLMClient({"status": "ACHIEVED", "confidence": 0.9, "answer_parts": [" ₹69,900 ", "", 5]}))
+
+        result = await verifier.verify(*self._inputs())
+
+        self.assertEqual(result.answer_parts, ["₹69,900"])
+
+    async def test_verifier_missing_or_malformed_answer_is_empty(self):
+        for response in ({"status": "ACHIEVED"}, {"status": "ACHIEVED", "answer_parts": None},
+                         {"status": "ACHIEVED", "answer_parts": "₹69,900"}):
+            with self.subTest(response=response):
+                result = await GoalVerifier(FakeLLMClient(response)).verify(*self._inputs())
+
+                self.assertEqual(result.answer_parts, [])
 
     async def test_verifier_treats_empty_response_as_unknown(self):
         verifier = GoalVerifier(FakeLLMClient({}))
