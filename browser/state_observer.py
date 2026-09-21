@@ -32,11 +32,24 @@ class StateObserver:
                 
                 // Keep the first 150 lines of meaningful text, which easily covers the main product info
                 const visibleText = [...new Set(lines)].slice(0, 150);
-                
+
+                // Page text is the same whatever the scroll position, and typed
+                // input values are not part of it, so both are captured here:
+                // without them, scrolling or typing looks like no progress.
+                const forms = Array.from(document.querySelectorAll('input, textarea, select'))
+                    .filter(e => e.type !== 'hidden' && e.type !== 'password' && e.value)
+                    .slice(0, 20)
+                    .map(e => ({
+                        field: e.name || e.id || e.getAttribute('aria-label') || e.placeholder || e.tagName.toLowerCase(),
+                        value: String(e.value).slice(0, 100),
+                    }));
+
                 return {
                     headings: headings,
                     selected_states: selected,
-                    visible_text: visibleText
+                    visible_text: visibleText,
+                    forms: forms,
+                    scroll_y: Math.round(window.scrollY),
                 };
             }
             """
@@ -47,7 +60,9 @@ class StateObserver:
                 title=title,
                 headings=data.get("headings", []),
                 selected_states=data.get("selected_states", []),
-                visible_text=data.get("visible_text", [])
+                visible_text=data.get("visible_text", []),
+                forms=data.get("forms", []),
+                scroll_y=data.get("scroll_y", 0),
             )
         except Exception as e:
             logger.error(f"Error observing state: {e}")

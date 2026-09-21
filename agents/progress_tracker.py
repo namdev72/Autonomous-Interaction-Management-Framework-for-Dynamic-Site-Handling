@@ -9,7 +9,13 @@ class ProgressTracker:
         
     def _hash_state(self, state: ObservedState) -> str:
         selected_strs = [str(x) for x in state.selected_states]
-        s = f"{state.url}|{state.title}|{'|'.join(selected_strs)}|{'|'.join(state.visible_text[:10])}"
+        # Scroll position and input values are included because the page text
+        # does not change when the agent scrolls or types.
+        form_strs = [f"{f.get('field')}={f.get('value')}" for f in state.forms]
+        s = (
+            f"{state.url}|{state.title}|{'|'.join(selected_strs)}|{'|'.join(state.visible_text[:10])}"
+            f"|scroll={state.scroll_y}|{'|'.join(form_strs)}"
+        )
         return hashlib.md5(s.encode()).hexdigest()
         
     def is_stuck(self, state: ObservedState) -> bool:

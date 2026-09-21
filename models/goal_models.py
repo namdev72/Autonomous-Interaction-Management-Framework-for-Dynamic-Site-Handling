@@ -29,6 +29,7 @@ class ObservedState(BaseModel):
     headings: List[str] = Field(default_factory=list)
     visible_text: List[str] = Field(default_factory=list)
     forms: List[Dict[str, Any]] = Field(default_factory=list)
+    scroll_y: int = 0
     selected_states: List[Dict[str, Any]] = Field(default_factory=list)
     checked_states: List[Dict[str, Any]] = Field(default_factory=list)
     links: List[Dict[str, str]] = Field(default_factory=list)

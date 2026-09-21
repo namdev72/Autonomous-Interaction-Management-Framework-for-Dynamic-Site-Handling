@@ -399,6 +399,38 @@ class GoalVerifierTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.confidence, 0.0)
 
 
+class ProgressTrackerTests(unittest.TestCase):
+    def _state(self, scroll_y=0, forms=None):
+        from models.goal_models import ObservedState
+        return ObservedState(url="https://www.amazon.in/s?k=q", title="Results",
+                             visible_text=["same page text"], scroll_y=scroll_y, forms=forms or [])
+
+    def test_scrolling_is_progress(self):
+        from agents.progress_tracker import ProgressTracker
+        tracker = ProgressTracker()
+
+        stuck = [tracker.is_stuck(self._state(scroll_y=y)) for y in (0, 600, 1200)]
+
+        self.assertEqual(stuck, [False, False, False])
+
+    def test_typing_is_progress(self):
+        from agents.progress_tracker import ProgressTracker
+        tracker = ProgressTracker()
+
+        stuck = [tracker.is_stuck(self._state(forms=f)) for f in (
+            [], [{"field": "k", "value": "iph"}], [{"field": "k", "value": "iphone 16"}])]
+
+        self.assertEqual(stuck, [False, False, False])
+
+    def test_identical_states_are_stuck(self):
+        from agents.progress_tracker import ProgressTracker
+        tracker = ProgressTracker()
+
+        stuck = [tracker.is_stuck(self._state()) for _ in range(3)]
+
+        self.assertEqual(stuck, [False, False, True])
+
+
 class BrowserControllerTests(unittest.TestCase):
     def test_headless_setting_is_respected(self):
         from browser.controller import BrowserController
