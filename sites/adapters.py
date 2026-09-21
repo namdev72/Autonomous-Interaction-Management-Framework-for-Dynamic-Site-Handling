@@ -2,6 +2,8 @@ import re
 from datetime import datetime, timezone
 from typing import List
 
+from loguru import logger
+
 from browser.controller import BrowserController
 from models.task_models import ProductOffer, SiteRunResult, TaskPlan
 from sites.registry import SitePolicy, policy_for
@@ -111,7 +113,12 @@ async def search_site(policy: SitePolicy, task: TaskPlan) -> SiteRunResult:
     except Exception as exc:
         return SiteRunResult(site=policy.key, status="failed", warnings=[str(exc)])
     finally:
-        await controller.close_browser()
+        # A crashed browser also fails to close; raising here would replace the
+        # result above and abort the remaining sites.
+        try:
+            await controller.close_browser()
+        except Exception as exc:
+            logger.warning(f"Failed to close browser for {policy.key}: {exc}")
 
 
 async def compare_sites(task: TaskPlan) -> List[SiteRunResult]:

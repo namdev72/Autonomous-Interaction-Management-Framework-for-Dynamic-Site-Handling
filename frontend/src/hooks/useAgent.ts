@@ -53,13 +53,18 @@ export function useAgent() {
 
         // Automatically handle status changes based on specific events
         if (parsedEvent.type === 'agent_completed') {
-          setStatus('COMPLETED');
+          // agent_completed means the run ended, not that it succeeded.
+          setStatus(parsedEvent.data.result?.completed ? 'COMPLETED' : 'FAILED');
           setResult(parsedEvent.data.result);
         } else if (parsedEvent.type === 'error') {
           setStatus('FAILED');
         } else if (parsedEvent.type === 'agent_stopped') {
           setStatus('STOPPED');
         }
+      };
+
+      ws.onerror = () => {
+        setStatus('FAILED');
       };
 
       ws.onclose = () => {

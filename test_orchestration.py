@@ -144,6 +144,66 @@ class ComparisonAnswerTests(unittest.TestCase):
         self.assertEqual(answer["offers"][0]["title"], "Within budget")
 
 
+class FakeController:
+    """BrowserController stand-in whose navigation fails and whose close raises."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def open_website(self, url):
+        return False
+
+    async def close_browser(self):
+        raise RuntimeError("Connection closed while reading from the driver")
+
+
+class SearchSiteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_close_failure_does_not_replace_the_site_result(self):
+        from sites.adapters import search_site
+        from sites.registry import policy_for
+
+        plan = TaskPlanner().plan("compare iphone 16 on amazon india")
+        with patch("sites.adapters.BrowserController", FakeController):
+            result = await search_site(policy_for("amazon_in"), plan)
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.warnings, ["Initial navigation failed."])
+
+
+class ComparisonRunStatusTests(unittest.IsolatedAsyncioTestCase):
+    async def _completed_event(self, statuses):
+        import server
+        from models.task_models import SiteRunResult
+
+        async def fake_compare(plan):
+            return [SiteRunResult(site=f"site_{i}", status=s) for i, s in enumerate(statuses)]
+
+        plan = TaskPlanner().plan("compare iphone 16 on amazon india and flipkart")
+        session = server.AgentSession(plan.subject)
+        with patch("server.compare_sites", fake_compare):
+            await server._run_agent(session, plan.subject, plan)
+
+        events = []
+        while not session.queue.empty():
+            events.append(await session.queue.get())
+        return next(e for e in events if e and e["type"] == "agent_completed")["data"]["result"]
+
+    async def test_one_completed_site_completes_the_comparison(self):
+        result = await self._completed_event(["failed", "completed"])
+        self.assertTrue(result["completed"])
+        self.assertEqual(result["reason"], "comparison_complete")
+
+    async def test_all_failed_sites_fail_the_comparison(self):
+        result = await self._completed_event(["failed", "failed"])
+        self.assertFalse(result["completed"])
+        self.assertEqual(result["reason"], "comparison_failed")
+
+    async def test_all_blocked_sites_are_reported_as_blocked(self):
+        result = await self._completed_event(["blocked", "blocked"])
+        self.assertFalse(result["completed"])
+        self.assertEqual(result["reason"], "sites_blocked")
+
+
 class RecoveryPolicyTests(unittest.TestCase):
     def test_failed_locator_recovers_with_scroll(self):
         policy = RecoveryPolicy()

@@ -31,13 +31,27 @@ export function ActivityEventDisplay({ event }: { event: AgentEvent }) {
           bg: 'bg-green-900/10 border-green-900/50',
           text: data?.message || `Extracted: ${data?.value}`
         };
-      case 'agent_started':
       case 'agent_completed':
+        if (data?.result && !data.result.completed) {
+          return {
+            icon: <X className="w-4 h-4 text-red-400 mt-1" />,
+            color: 'text-red-200',
+            bg: 'bg-red-900/10 border-red-900/50',
+            text: data.result.extracted_data?.answer || `Agent finished without completing the task (${data.result.reason}).`,
+          };
+        }
         return {
           icon: <Check className="w-4 h-4 text-green-400 mt-1" />,
           color: 'text-green-200',
           bg: 'bg-green-900/10 border-green-900/50',
-          text: data?.message || (data?.result?.extracted_data?.answer ? data.result.extracted_data.answer : 'Agent execution completed.'),
+          text: data?.result?.extracted_data?.answer || 'Agent execution completed.',
+        };
+      case 'agent_started':
+        return {
+          icon: <Check className="w-4 h-4 text-green-400 mt-1" />,
+          color: 'text-green-200',
+          bg: 'bg-green-900/10 border-green-900/50',
+          text: data?.message || 'Agent execution starting...',
         };
       case 'error':
         return {

@@ -82,26 +82,37 @@ async def _run_agent(session: AgentSession, query: str, plan: TaskPlan):
         else:
             print(f"[{event_type}] {data}")
 
-    agent = ReasoningAgent(
-        headless=False,
-        max_iterations=20,
-        allowed_hosts=allowed_hosts(),
-        on_event=on_event,
-    )
     try:
         await on_event("agent_started", {"message": "Agent execution starting...", "plan": plan.model_dump()})
         if plan.task_type == "compare":
             await on_event("log", {"level": "info", "message": f"Comparing approved sites: {', '.join(plan.candidate_sites)}"})
             comparison = await compare_sites(plan)
             answer = compose_comparison_answer(plan, comparison)
+            # Completed only if at least one site actually ran; a crashed or
+            # blocked site is not a successful comparison.
+            completed = any(result.status == "completed" for result in comparison)
+            if completed:
+                reason = "comparison_complete"
+            elif comparison and all(result.status == "blocked" for result in comparison):
+                reason = "sites_blocked"
+            else:
+                reason = "comparison_failed"
             await on_event("agent_completed", {"result": {
-                "completed": True,
+                "completed": completed,
                 "iterations": 1,
-                "reason": "comparison_complete",
+                "reason": reason,
                 "extracted_data": answer,
                 "last_url": None,
             }})
             return
+        # Built only for the reasoning path: it opens Chroma and SQLite
+        # connections that the comparison path never uses.
+        agent = ReasoningAgent(
+            headless=False,
+            max_iterations=20,
+            allowed_hosts=allowed_hosts(),
+            on_event=on_event,
+        )
         result = await agent.execute_task(query)
         await on_event("agent_completed", {"result": result.model_dump()})
     except asyncio.CancelledError:
