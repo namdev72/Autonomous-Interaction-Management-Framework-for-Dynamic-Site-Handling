@@ -536,6 +536,30 @@ class BrowserControllerTests(unittest.TestCase):
         self.assertFalse(BrowserController().headless)
 
 
+class SiteRegistryTests(unittest.TestCase):
+    def test_search_urls_come_from_the_registry_templates(self):
+        from sites.registry import policy_for
+
+        self.assertEqual(policy_for("amazon_in").build_search_url("iPhone 16"), "https://www.amazon.in/s?k=iPhone%2016")
+        self.assertEqual(policy_for("flipkart_in").build_search_url("a/b"), "https://www.flipkart.com/search?q=a%2Fb")
+
+    def test_home_url_respects_a_home_path(self):
+        from sites.registry import policy_for
+
+        self.assertEqual(policy_for("amazon_us").home_url, "https://www.amazon.com")
+        self.assertEqual(policy_for("google_flights").home_url, "https://www.google.com/travel/flights")
+
+    def test_non_search_task_starts_at_the_site_home(self):
+        from models.strategy_models import RegistryStrategy
+        from router.task_router import TaskRouter
+        query = "book a flight from Delhi to London on google flights"
+
+        strategy = TaskRouter().route_task(query, TaskPlanner().plan(query))
+
+        self.assertIsInstance(strategy, RegistryStrategy)
+        self.assertEqual(strategy.domain, "https://www.google.com/travel/flights")
+
+
 class SignatureTests(unittest.TestCase):
     TRACKED = "https://www.amazon.com/s?k=iPhone+16&crid=2MUZMVD8M5O0F&ref=nb_sb_noss_1"
     CLEAN = "https://amazon.com/s?k=iPhone+16"
