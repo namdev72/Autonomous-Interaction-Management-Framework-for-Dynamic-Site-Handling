@@ -62,9 +62,3 @@ class SiteRunResult(BaseModel):
     status: Literal["completed", "blocked", "failed"]
     offers: List[ProductOffer] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
-
-
-class ClarificationRequest(BaseModel):
-    question: str
-    options: List[str] = Field(default_factory=list)
-    field: str
