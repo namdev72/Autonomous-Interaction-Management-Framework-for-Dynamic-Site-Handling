@@ -16,6 +16,11 @@ class DOMExtractor:
         
         js_script = """
         () => {
+            // ARIA widgets built from divs: Google Flights' sort options are
+            // role="tab" with tabindex="-1", so without these the agent was
+            // never shown them and could not select "Cheapest".
+            const CONTROL_ROLES = ['button', 'link', 'tab', 'menuitem', 'option', 'checkbox', 'radio', 'switch', 'combobox'];
+
             function isVisible(el) {
                 if (!el) return false;
                 const rect = el.getBoundingClientRect();
@@ -61,7 +66,7 @@ class DOMExtractor:
                 let parent = el.parentElement;
                 while (parent) {
                     const tag = parent.tagName.toLowerCase();
-                    if (tag === 'a' || tag === 'button' || parent.getAttribute('role') === 'button' || parent.getAttribute('role') === 'link') {
+                    if (tag === 'a' || tag === 'button' || CONTROL_ROLES.includes(parent.getAttribute('role'))) {
                         return true;
                     }
                     parent = parent.parentElement;
@@ -85,7 +90,9 @@ class DOMExtractor:
 
             function getInteractiveElements(root) {
                 let found = [];
-                const selector = 'h1, h2, h3, p, span.price_color, input, button, a, select, textarea, [role="button"], [role="link"], [tabindex]:not([tabindex="-1"])';
+                const selector = 'h1, h2, h3, p, span.price_color, input, button, a, select, textarea, '
+                    + CONTROL_ROLES.map(role => `[role="${role}"]`).join(', ')
+                    + ', [tabindex]:not([tabindex="-1"])';
                 
                 if (root.querySelectorAll) {
                     found.push(...root.querySelectorAll(selector));
