@@ -1,5 +1,5 @@
 import type { AgentEvent } from '../hooks/useAgent';
-import { ArrowRight, Check, X, Info, Zap } from 'lucide-react';
+import { ArrowRight, Check, X, Info, Zap, MessageCircleQuestion } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -52,6 +52,13 @@ export function ActivityEventDisplay({ event }: { event: AgentEvent }) {
           color: 'text-green-200',
           bg: 'bg-green-900/10 border-green-900/50',
           text: data?.message || 'Agent execution starting...',
+        };
+      case 'user_input_required':
+        return {
+          icon: <MessageCircleQuestion className="w-4 h-4 text-amber-400 mt-1" />,
+          color: 'text-amber-200',
+          bg: 'bg-amber-900/10 border-amber-900/50',
+          text: `Question: ${data?.question || 'The agent needs more information.'}`,
         };
       case 'error':
         return {

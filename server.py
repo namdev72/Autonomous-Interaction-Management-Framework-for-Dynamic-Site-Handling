@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import sys
 import uuid
 from typing import Dict, Optional, Any
@@ -50,7 +51,7 @@ class AgentSession:
         # We wrap the underlying agent events into a unified structure
         await self.queue.put({
             "type": event_type,
-            "timestamp": asyncio.get_event_loop().time(), # we'll format real timestamp in frontend or here
+            "timestamp": datetime.datetime.now().isoformat(),
             "data": data
         })
 
@@ -184,6 +185,12 @@ async def stop_agent(session_id: str):
         session = sessions[session_id]
         if session.task and not session.task.done():
             session.task.cancel()
+            return {"status": "cancelled"}
+        if session.waiting_for_user:
+            # No task exists yet; end the session and close its WebSocket.
+            session.waiting_for_user = False
+            await session.enqueue_event("agent_stopped", {"message": "Agent execution was cancelled by user."})
+            await session.queue.put(None)
             return {"status": "cancelled"}
     return {"status": "not_found"}
 
