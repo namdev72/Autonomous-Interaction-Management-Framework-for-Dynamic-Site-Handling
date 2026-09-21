@@ -140,7 +140,10 @@ class ReasoningAgent:
         recovery_hint={state.last_result.recovery_hint}
         url_after={state.last_result.url_after}
         """
-        return f"{state.memory_context}{recalled}{semantic}{result}\n\nCurrent Page Context:\n{state.page_context}"
+        # The verifier judges "done", so the planner is told what it said is
+        # still missing; otherwise it keeps claiming done on the same page.
+        feedback = f"\n\nGoal check: not achieved yet. Still missing: {state.goal_feedback}" if state.goal_feedback else ""
+        return f"{state.memory_context}{recalled}{semantic}{result}{feedback}\n\nCurrent Page Context:\n{state.page_context}"
 
     async def _build_state(
         self,
@@ -443,7 +446,20 @@ class ReasoningAgent:
         def normalize(text: str) -> str:
             return re.sub(r"\s+", " ", text).strip().casefold()
 
-        lines = [normalize(line) for line in (state.title, *state.headings, *state.visible_text, *state.relevant_content)]
+        def strings(value):
+            if isinstance(value, str):
+                yield value
+            elif isinstance(value, dict):
+                for item in value.values():
+                    yield from strings(item)
+            elif isinstance(value, list):
+                for item in value:
+                    yield from strings(item)
+
+        # Everything the verifier was shown, not only the visible text: the
+        # date can be in a form field ("Thu, Sep 24") and the trip type in a
+        # selected dropdown ("Round trip").
+        lines = [normalize(text) for text in strings(state.model_dump())]
         return all(any(normalize(part) in line for line in lines) for part in parts)
 
     async def execute_task(self, user_query: str, strategy: Optional[Any] = None) -> AgentRunResult:
@@ -553,7 +569,8 @@ class ReasoningAgent:
 
                 # 4. EXTRACT INTERACTIVE DOM & BUILD PLANNER STATE
                 state = await self._build_state(user_query, iterations, last_action, last_result)
-                
+                state.goal_feedback = verification.missing
+
                 # 5. PLAN
                 decision = await self._decide_next_step(state, strategy_note)
                 if not decision:
@@ -582,8 +599,16 @@ class ReasoningAgent:
                             last_url=final_state.url,
                         )
                     
-                    await self._emit_log("Planner output 'done' but goal is not verified. Recovering.", "warning")
-                    action = self.recovery_policy.from_loop()
+                    # Report the rejection with the verifier's reason as this
+                    # step's result, rather than scrolling: a scroll does not
+                    # address what is missing and can move it out of view.
+                    missing = final_verification.missing or "the goal is not visible on this page yet"
+                    await self._emit_log(f"Planner output 'done' but goal is not verified: {missing}", "warning")
+                    last_result = ActionResult(success=False, action="done",
+                                               error=f"'done' was rejected by the goal check. Still missing: {missing}",
+                                               url_before=final_state.url, url_after=final_state.url)
+                    last_action = action
+                    continue
 
                 # 7. ACT
                 last_result = await self._execute_with_recovery(executor, action, state)

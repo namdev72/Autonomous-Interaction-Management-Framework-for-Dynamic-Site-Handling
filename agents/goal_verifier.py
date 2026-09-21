@@ -17,7 +17,8 @@ class GoalVerifier:
             "status": "ACHIEVED" | "NOT_ACHIEVED" | "UNKNOWN",
             "confidence": 0.0 to 1.0,
             "evidence": {"found_text": "...", "selected_state": "..."},
-            "answer_parts": ["...", "..."]
+            "answer_parts": ["...", "..."],
+            "missing": "..." | null
         }
         
         ACHIEVED: All required predicates in the contract are met.
@@ -29,6 +30,10 @@ class GoalVerifier:
         the Current State text. Include the trip type and date when the page shows them, e.g.
         ["Example Air", "9:05 PM", "11:20 PM", "Nonstop", "$212", "One way", "Mar 3"].
         Otherwise [].
+
+        missing: when not ACHIEVED, the one thing that still has to happen on this page, as an
+        instruction naming the control to use if there is one, e.g. "Choose 'Size: M' in the size
+        picker; no size is chosen." Otherwise null.
         """
         # Compact JSON: indentation adds tokens on every call for no benefit to the model.
         user_prompt = f"Goal Contract:\n{contract.model_dump_json()}\n\nCurrent State Evidence:\n{state.model_dump_json()}"
@@ -42,6 +47,9 @@ class GoalVerifier:
         evidence = response.get("evidence", {})
         parts = response.get("answer_parts") or []
         answer_parts = [part.strip() for part in parts if isinstance(part, str) and part.strip()] if isinstance(parts, list) else []
-        
-        logger.info(f"Verification Result: {status} (Confidence: {confidence})")
-        return VerificationResult(status=status, confidence=confidence, evidence=evidence, answer_parts=answer_parts)
+        missing = response.get("missing")
+        missing = missing.strip() if isinstance(missing, str) and missing.strip() and status != "ACHIEVED" else None
+
+        logger.info(f"Verification Result: {status} (Confidence: {confidence})" + (f" Missing: {missing}" if missing else ""))
+        return VerificationResult(status=status, confidence=confidence, evidence=evidence,
+                                  answer_parts=answer_parts, missing=missing)
