@@ -92,7 +92,18 @@ class ReasoningAgent:
             logger.error(f"Failed to capture screenshot: {e}")
         return None
 
+    @property
+    def vision_enabled(self) -> bool:
+        return bool(self.llm_client.vision_model_name)
+
     def _agent_system_prompt(self, user_query: str, strategy_note: str = "") -> str:
+        # Vision is offered only when a vision model is configured; otherwise
+        # the planner asked for it and every such click failed quietly.
+        vision_rule = (
+            "If an element is hidden in an iframe, modal, captcha, or visual-only widget, set fallback_to_vision true."
+            if self.vision_enabled else ""
+        )
+        vision_field = ',\n            "fallback_to_vision": <boolean>' if self.vision_enabled else ""
         return f"""
         You are an autonomous web browser agent.
         Your goal is: {user_query}
@@ -112,15 +123,14 @@ class ReasoningAgent:
         - hover, drag_to, press_key, select: use only when required by the page control.
         - done: you MUST output this action immediately once the main user goal is satisfied. Do not perform redundant verification or scrolling if the target is already reached or visible.
 
-        If an element is hidden in an iframe, modal, captcha, or visual-only widget, set fallback_to_vision true.
+        {vision_rule}
 
         Respond ONLY with a valid JSON object matching this schema:
         {{
             "action": "<action_type>",
             "target": "<playwright_index_or_null>",
             "value": "<value_or_null>",
-            "reasoning": "<brief_reasoning>",
-            "fallback_to_vision": <boolean>
+            "reasoning": "<brief_reasoning>"{vision_field}
         }}
         """
 
@@ -168,7 +178,7 @@ class ReasoningAgent:
         page_context = self.context_builder.build_context(current_url, elements)
         self.memory.index_page_content(current_url, page_context, current_page_key)
         memory_context = self.memory.get_context_string()
-        semantic_memory = self.memory.semantic_search(user_query, n_results=2)
+        semantic_memory = self.memory.semantic_search(user_query, n_results=2, exclude_key=current_page_key)
 
         # Recall what worked here before, and resolve each remembered target
         # back to the index this extraction gave it.
@@ -249,7 +259,7 @@ class ReasoningAgent:
                     executor, recovery_action, state, "result_recovery", self._signature_after(result, state)
                 )
 
-        if (not result.success or action.fallback_to_vision) and action.action == "click":
+        if self.vision_enabled and (not result.success or action.fallback_to_vision) and action.action == "click":
             result = await self._run_vision_fallback(executor, action, state, result)
 
         return result

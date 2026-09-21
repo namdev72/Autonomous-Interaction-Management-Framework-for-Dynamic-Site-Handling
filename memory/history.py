@@ -12,6 +12,10 @@ from models.action_models import AgentAction
 from models.orchestration_models import ActionResult
 from loguru import logger
 
+# An earlier page is recalled as context, not re-read in full: about 1,500
+# characters (roughly 400 tokens) is enough to remind the planner what it held.
+SEMANTIC_RESULT_CHARS = 1500
+
 
 class StepVerdict(BaseModel):
     """
@@ -275,7 +279,18 @@ class MemoryState:
         """Verified transitions known to leave this page, most-taken first."""
         return self.graph.neighbours(page)[:limit]
 
-    def semantic_search(self, query: str, n_results: int = 1) -> List[str]:
+    def semantic_search(self, query: str, n_results: int = 1, exclude_key: str = None,
+                        max_chars: int = SEMANTIC_RESULT_CHARS) -> List[str]:
+        """
+        Earlier pages of this run that relate to the query.
+
+        Only this run: other runs' page dumps carry element ids (pw-id-N) that
+        do not exist on today's pages, and cost thousands of prompt tokens per
+        step. The current page is excluded because it is already in the prompt;
+        it was the top hit, since the agent indexes it just before searching.
+        What is learned across runs is recalled separately (verified actions
+        and the navigation graph).
+        """
         if not self.collection:
             return []
         try:
@@ -284,9 +299,13 @@ class MemoryState:
                 return []
             results = self.collection.query(
                 query_texts=[query],
-                n_results=min(n_results, count)
+                n_results=min(n_results + 1, count),
+                where={"run_id": self.run_id},
             )
-            return results["documents"][0] if results["documents"] else []
+            ids = results["ids"][0] if results.get("ids") else []
+            documents = results["documents"][0] if results.get("documents") else []
+            earlier = [doc for doc_id, doc in zip(ids, documents) if doc_id != exclude_key]
+            return [doc[:max_chars] for doc in earlier[:n_results]]
         except Exception as e:
             logger.warning(f"Failed to query vector memory: {e}")
             return []
