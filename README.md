@@ -95,6 +95,8 @@ npm run dev
 ```
 *(The UI will be accessible at `http://localhost:5173`. Enter your task there to watch the agent work in real-time.)*
 
+The UI talks to `http://localhost:8000` by default. To use a backend elsewhere, create `frontend/.env` with `VITE_API_URL=http://<host>:8000` and restart `npm run dev`.
+
 ### Option B: Run in CLI Mode
 
 If you prefer to run the agent headlessly or directly from the terminal without the UI:
