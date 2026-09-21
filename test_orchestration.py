@@ -606,6 +606,26 @@ class SiteRegistryTests(unittest.TestCase):
         self.assertIsInstance(strategy, RegistryStrategy)
         self.assertEqual(strategy.domain, "https://www.google.com/travel/flights")
 
+    def test_flight_searches_are_one_way_unless_the_user_says_otherwise(self):
+        from router.task_router import TaskRouter
+        cases = (("search flights from Delhi to Mumbai on google flights", True),
+                 ("search round trip flights from Delhi to Mumbai on google flights", False),
+                 ("search flights from Delhi to Mumbai returning Oct 3 on google flights", False),
+                 ("search one-way flights from Delhi to Mumbai on google flights", False))
+        for query, adds_one_way in cases:
+            with self.subTest(query=query):
+                url = TaskRouter().route_task(query, TaskPlanner().plan(query)).url
+
+                self.assertEqual(url.endswith("%20one%20way"), adds_one_way)
+
+    def test_product_searches_are_not_changed(self):
+        from router.task_router import TaskRouter
+        query = "search one way street sign on amazon india"
+
+        url = TaskRouter().route_task(query, TaskPlanner().plan(query)).url
+
+        self.assertEqual(url, "https://www.amazon.in/s?k=one%20way%20street%20sign")
+
 
 class SignatureTests(unittest.TestCase):
     TRACKED = "https://www.amazon.com/s?k=iPhone+16&crid=2MUZMVD8M5O0F&ref=nb_sb_noss_1"
