@@ -29,7 +29,7 @@ class TaskPlanner:
         if is_flight and not sites:
             return TaskPlan(
                 task_type="book" if is_booking else "search",
-                subject=self._subject(text, task_type, sites),
+                subject=self._subject(text, is_flight, sites),
                 candidate_sites=["google_flights"],
                 constraints=self._constraints(lowered),
                 clarification_question="Which approved flight website do you prefer?",
@@ -43,7 +43,7 @@ class TaskPlanner:
             elif region is None:
                 return TaskPlan(
                     task_type=task_type,
-                    subject=self._subject(text, task_type, sites),
+                    subject=self._subject(text, is_flight, sites),
                     candidate_sites=["amazon_in", "amazon_us"],
                     constraints=self._constraints(lowered),
                     clarification_question="Which Amazon region should I use?",
@@ -63,7 +63,7 @@ class TaskPlanner:
         currency = policy_for(sites[0]).currency or None
         return TaskPlan(
             task_type=task_type,
-            subject=self._subject(text, task_type, sites),
+            subject=self._subject(text, is_flight, sites),
             preferred_sites=sites,
             candidate_sites=sites,
             country=country,
@@ -86,23 +86,34 @@ class TaskPlanner:
         return "amazon_in" if says_india else "amazon_us"
 
     @staticmethod
-    def _subject(query: str, task_type: str, sites: Optional[list[str]] = None) -> str:
-        """Reduce conversational wording to the product or route being searched."""
+    def _subject(query: str, is_flight: bool = False, sites: Optional[list[str]] = None) -> str:
+        """
+        Reduce conversational wording to the product or route being searched:
+        "compare the price of iphone 16 across amazon india and flipkart" is a
+        search for "iphone 16", not for the whole sentence.
+        """
         text = query.split("\nUser clarification:", 1)[0].strip()
         text = re.sub(r"^open\s+(?:chrome|browser)\s+and\s+", "", text, flags=re.IGNORECASE)
-        if task_type == "compare":
-            match = re.search(r"compare\s+(.+?)(?:\s+prices?|\s+on\s+|\s+with\s+my\s+budget|$)", text, re.IGNORECASE)
-            if match:
-                return match.group(1).strip()
-        match = re.search(r"search\s+(?:for\s+)?(.+?)(?:\s+on\s+|$)", text, re.IGNORECASE)
-        subject = match.group(1).strip() if match else text
+        lead = re.match(
+            r"(?:compare|search(?:\s+for)?|find|look\s+for|show(?:\s+me)?|get)\s+(?:the\s+)?(?:prices?\s+(?:of|for)\s+)?",
+            text, re.IGNORECASE,
+        )
+        if not lead:
+            return text
+        subject = text[lead.end():]
+        if not is_flight:
+            # A product search for "cheapest iphone 16" is a search for the
+            # phone. Flights keep it: in Google Flights' query it sorts by price.
+            subject = re.sub(r"^(?:cheapest|lowest[\s-]priced?|best[\s-]priced?)\s+", "", subject, flags=re.IGNORECASE)
+        # The product ends where the sites or constraints begin.
+        subject = re.split(r"\s+(?:prices?|on|across|between|with|under|below|within)\b", subject, maxsplit=1, flags=re.IGNORECASE)[0]
 
         # A query can name Amazon both as a routing hint and as the
         # destination, e.g. "search for amazon galaxy note 7 on amazon".
         # The routing hint must not become part of the product query.
         if sites and any(site.startswith("amazon_") for site in sites):
             subject = re.sub(r"^amazon\s+", "", subject, count=1, flags=re.IGNORECASE)
-        return subject.strip()
+        return subject.strip(" ,.") or text
 
     @staticmethod
     def _constraints(query: str) -> dict[str, str]:

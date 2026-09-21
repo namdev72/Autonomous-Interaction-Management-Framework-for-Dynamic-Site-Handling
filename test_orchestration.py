@@ -147,6 +147,25 @@ class TaskPlannerTests(unittest.TestCase):
                 self.assertEqual(self.planner.plan(query).task_type, "search")
         self.assertEqual(self.planner.plan("book a flight on google flights").task_type, "book")
 
+    def test_subject_is_the_product_without_sites_or_filler(self):
+        cases = {
+            "compare iphone 16 across amazon india and flipkart": "iphone 16",
+            "compare iphone 16 between amazon india and flipkart": "iphone 16",
+            "compare the price of iphone 16 on amazon india and flipkart": "iphone 16",
+            "find the cheapest iphone 16 across amazon india and flipkart": "iphone 16",
+            "search for wireless mouse under 500 on amazon india": "wireless mouse",
+            "compare phone cases on flipkart": "phone cases",
+        }
+        for query, subject in cases.items():
+            with self.subTest(query=query):
+                self.assertEqual(self.planner.plan(query).subject, subject)
+
+    def test_flight_subject_keeps_cheapest(self):
+        # In Google Flights' query, "cheapest" is what sorts results by price.
+        plan = self.planner.plan("find the cheapest flight from Delhi to Mumbai on google flights")
+
+        self.assertEqual(plan.subject, "cheapest flight from Delhi to Mumbai")
+
     def test_renewed_is_not_condition_new(self):
         self.assertNotIn("condition", self.planner.plan("compare renewed iphone 15 on flipkart and amazon india").constraints)
         self.assertEqual(self.planner.plan("compare brand new iphone 15 on flipkart and amazon india").constraints["condition"], "new")
