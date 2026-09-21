@@ -63,6 +63,11 @@ def policy_for(key: str) -> SitePolicy:
         raise ValueError(f"Site is not whitelisted: {key}") from exc
 
 
+def supports_comparison(policy: SitePolicy) -> bool:
+    """Price comparison reads product result cards; see sites/adapters.py."""
+    return "product_search" in policy.capabilities
+
+
 def classify_sites(query: str) -> List[str]:
     lowered = query.lower()
     selected = []
