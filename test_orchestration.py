@@ -237,6 +237,71 @@ class FlipkartOfferTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(offers[0].product_url, "https://flipkart.com/apple-iphone-16-black-128-gb/p/itmb07?pid=MOB1")
 
 
+def _offer(title, price, availability=None, rating=None):
+    from models.task_models import ProductOffer
+    return ProductOffer(site="flipkart_in", title=title, product_url=f"https://example/{title}", price=price,
+                        currency="INR", rating=rating, availability=availability, source_timestamp="now")
+
+
+class AvailabilityTests(unittest.IsolatedAsyncioTestCase):
+    def test_status_label_is_read_from_real_card_lines(self):
+        from sites.adapters import _status_label
+
+        # Lines of a live Flipkart iPhone 16 card.
+        lines = ["Bestseller", "Coming Soon", "Add to Compare", "Apple iPhone 16 (Black, 128 GB)",
+                 "4.61,98,941 Ratings & 8,603 Reviews", "128 GB ROM", "₹69,900"]
+
+        self.assertEqual(_status_label(lines), "Coming Soon")
+        self.assertIsNone(_status_label(["Bestseller", "Only few left", "₹200"]))
+
+    def test_only_listed_labels_make_an_offer_unavailable(self):
+        self.assertTrue(_offer("a", 1).is_available)
+        self.assertTrue(_offer("a", 1, "Only few left").is_available)
+        self.assertFalse(_offer("a", 1, "Coming Soon").is_available)
+        self.assertFalse(_offer("a", 1, "SOLD OUT").is_available)
+
+    async def test_flipkart_offer_carries_the_card_status(self):
+        from sites.adapters import _flipkart_offers
+        from sites.registry import policy_for
+
+        page = FakeFlipkartPage([
+            {"href": "/apple-iphone-16/p/itm1", "title": "Apple iPhone 16 (Black, 128 GB)", "price": "₹69,900",
+             "rating": "4.6", "lines": ["Bestseller", "Coming Soon", "Add to Compare"]},
+        ])
+
+        offers = await _flipkart_offers(page, policy_for("flipkart_in"), "iPhone 16")
+
+        self.assertEqual(offers[0].availability, "Coming Soon")
+
+    def test_unavailable_offer_cannot_be_the_lowest_price(self):
+        from models.task_models import SiteRunResult
+        plan = TaskPlanner().plan("compare iphone 16 on flipkart")
+        result = SiteRunResult(site="flipkart_in", status="completed", offers=[
+            _offer("Apple iPhone 16 pre-order", 60000, "Coming Soon"),
+            _offer("Apple iPhone 16", 69900),
+        ])
+
+        answer = compose_comparison_answer(plan, [result])
+
+        self.assertIn("Lowest matching price: INR 69,900.00", answer["answer"])
+        self.assertIn("Left out 1 offer(s) that cannot be bought right now (Coming Soon)", answer["answer"])
+        # Still shown, but after the ranked offers.
+        self.assertEqual([o["title"] for o in answer["offers"]], ["Apple iPhone 16", "Apple iPhone 16 pre-order"])
+
+    def test_all_unavailable_is_reported_plainly(self):
+        from models.task_models import SiteRunResult
+        plan = TaskPlanner().plan("compare iphone 16 on flipkart")
+        result = SiteRunResult(site="flipkart_in", status="completed", offers=[
+            _offer("Apple iPhone 16 Black", 69900, "Coming Soon"),
+            _offer("Apple iPhone 16 Pink", 69900, "Coming Soon"),
+        ])
+
+        answer = compose_comparison_answer(plan, [result])
+
+        self.assertEqual(answer["answer"], "I found 2 offer(s), but none can be bought right now.")
+        self.assertEqual(len(answer["offers"]), 2)
+
+
 class ComparisonRunStatusTests(unittest.IsolatedAsyncioTestCase):
     async def _completed_event(self, statuses):
         import server

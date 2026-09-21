@@ -6,7 +6,7 @@ from urllib.parse import urljoin
 from loguru import logger
 
 from browser.controller import BrowserController
-from models.task_models import ProductOffer, SiteRunResult, TaskPlan
+from models.task_models import UNAVAILABLE_STATUSES, ProductOffer, SiteRunResult, TaskPlan
 from sites.registry import SitePolicy, policy_for
 
 
@@ -81,7 +81,8 @@ async def _amazon_offers(page, policy: SitePolicy, subject: str, limit: int = 10
 # read by structure. Both result layouts (list for phones, grid for
 # accessories) share it: the selling price is the first element whose whole
 # text is a rupee amount and that is not struck through (the struck one is the
-# MRP), and the rating is the badge whose whole text is a 1-5 score.
+# MRP), and the rating is the badge whose whole text is a 1-5 score. Short
+# text lines are returned too, for status labels such as "Coming Soon".
 FLIPKART_CARDS_JS = r"""
 (limit) => [...document.querySelectorAll('div[data-id]')].slice(0, limit).map(card => {
   const text = el => (el.innerText || '').trim();
@@ -96,9 +97,15 @@ FLIPKART_CARDS_JS = r"""
     title: card.querySelector('a[title]')?.getAttribute('title') || card.querySelector('img[alt]')?.getAttribute('alt') || '',
     price: price ? text(price) : null,
     rating: rating ? text(rating) : null,
+    lines: text(card).split('\n').map(line => line.trim()).filter(line => line && line.length <= 40),
   };
 })
 """
+
+
+def _status_label(lines: List[str]) -> str | None:
+    """The card's not-purchasable label, if it shows one."""
+    return next((line for line in lines if line.lower() in UNAVAILABLE_STATUSES), None)
 
 
 async def _flipkart_offers(page, policy: SitePolicy, subject: str, limit: int = 10) -> List[ProductOffer]:
@@ -118,6 +125,7 @@ async def _flipkart_offers(page, policy: SitePolicy, subject: str, limit: int = 
             price=_number(card["price"]),
             currency=policy.currency,
             rating=float(card["rating"]) if card["rating"] else None,
+            availability=_status_label(card.get("lines", [])),
             source_timestamp=datetime.now(timezone.utc).isoformat(),
         ))
     return offers

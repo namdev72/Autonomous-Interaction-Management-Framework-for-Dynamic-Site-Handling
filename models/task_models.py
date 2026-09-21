@@ -21,6 +21,16 @@ class TaskPlan(BaseModel):
         return bool(self.clarification_question)
 
 
+# Status labels, compared lowercased, meaning an offer cannot be bought now.
+UNAVAILABLE_STATUSES = (
+    "coming soon",
+    "currently unavailable",
+    "temporarily unavailable",
+    "out of stock",
+    "sold out",
+)
+
+
 class ProductOffer(BaseModel):
     """Normalized offer returned by a site adapter."""
 
@@ -31,9 +41,15 @@ class ProductOffer(BaseModel):
     currency: Optional[str] = None
     rating: Optional[float] = None
     review_count: Optional[int] = None
+    # The site's own status label when it shows one, e.g. "Coming Soon";
+    # None when the card states nothing.
     availability: Optional[str] = None
     condition: Optional[str] = None
     source_timestamp: str
+
+    @property
+    def is_available(self) -> bool:
+        return (self.availability or "").strip().lower() not in UNAVAILABLE_STATUSES
 
 
 class SiteRunResult(BaseModel):

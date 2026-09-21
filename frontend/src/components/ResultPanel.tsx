@@ -26,9 +26,19 @@ export function ResultPanel({ result }: { result: any }) {
                   </thead>
                   <tbody>
                     {comparison.offers.map((offer: any) => (
-                      <tr key={`${offer.site}-${offer.product_url}`} className="border-b border-slate-900 text-slate-300">
+                      <tr
+                        key={`${offer.site}-${offer.product_url}`}
+                        className={`border-b border-slate-900 ${offer.availability ? 'text-slate-500' : 'text-slate-300'}`}
+                      >
                         <td className="py-2 pr-3">{offer.site}</td>
-                        <td className="py-2 pr-3 max-w-xs">{offer.title}</td>
+                        <td className="py-2 pr-3 max-w-xs">
+                          {offer.title}
+                          {offer.availability && (
+                            <span className="ml-2 px-1.5 py-0.5 rounded text-xs text-amber-300 bg-amber-950/40 border border-amber-800/50 whitespace-nowrap">
+                              {offer.availability}
+                            </span>
+                          )}
+                        </td>
                         <td className="py-2 pr-3 whitespace-nowrap">{offer.currency} {offer.price?.toLocaleString()}</td>
                         <td className="py-2">{offer.rating ?? 'N/A'}</td>
                       </tr>
