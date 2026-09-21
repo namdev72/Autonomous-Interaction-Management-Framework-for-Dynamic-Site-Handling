@@ -143,6 +143,40 @@ class ComparisonAnswerTests(unittest.TestCase):
 
         self.assertEqual(answer["offers"][0]["title"], "Within budget")
 
+    def test_unmet_rating_is_reported_not_presented_as_matches(self):
+        plan = TaskPlanner().plan("compare iphone 16 on amazon india with at least 4.5 star rating")
+        from models.task_models import ProductOffer, SiteRunResult
+        result = SiteRunResult(
+            site="amazon_in",
+            status="completed",
+            offers=[
+                ProductOffer(site="amazon_in", title="Low rated", product_url="https://example/1", price=50000, currency="INR", rating=3.0, source_timestamp="now"),
+                ProductOffer(site="amazon_in", title="Unrated", product_url="https://example/2", price=60000, currency="INR", source_timestamp="now"),
+            ],
+        )
+
+        answer = compose_comparison_answer(plan, [result])
+
+        self.assertIn("none met a rating of at least 4.5/5", answer["answer"])
+        self.assertNotIn("Lowest matching price", answer["answer"])
+
+    def test_every_unmet_constraint_is_named(self):
+        plan = TaskPlanner().plan("compare iphone 16 on amazon india with at least 4.5 star rating and my budget being 40000")
+        from models.task_models import ProductOffer, SiteRunResult
+        result = SiteRunResult(
+            site="amazon_in",
+            status="completed",
+            offers=[
+                ProductOffer(site="amazon_in", title="Too expensive", product_url="https://example/1", price=80000, currency="INR", rating=4.8, source_timestamp="now"),
+                ProductOffer(site="amazon_in", title="Too low rated", product_url="https://example/2", price=30000, currency="INR", rating=3.9, source_timestamp="now"),
+            ],
+        )
+
+        answer = compose_comparison_answer(plan, [result])
+
+        self.assertIn("a rating of at least 4.5/5 and the budget of INR 40,000.00", answer["answer"])
+        self.assertEqual(len(answer["offers"]), 2)
+
 
 class FakeController:
     """BrowserController stand-in whose navigation fails and whose close raises."""
