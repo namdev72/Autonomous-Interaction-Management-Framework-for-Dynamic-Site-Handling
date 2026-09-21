@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import sys
+import time
 import uuid
 from typing import Dict, Optional, Any
 
@@ -43,6 +44,7 @@ class AgentSession:
         self.id = uuid.uuid4().hex
         self.queue = asyncio.Queue()
         self.task: Optional[asyncio.Task] = None
+        self.last_active = time.monotonic()
         self.query = query
         self.plan: Optional[TaskPlan] = None
         self.waiting_for_user = False
@@ -58,6 +60,23 @@ class AgentSession:
 # Store active sessions
 sessions: Dict[str, AgentSession] = {}
 
+# A session is removed once its run has ended and the UI has read every event.
+# Sessions abandoned before that (the UI never connected, a question was never
+# answered) are removed after this long, so a long-running server does not
+# keep every request in memory.
+SESSION_TTL_SECONDS = 30 * 60
+
+
+def prune_sessions(now: Optional[float] = None) -> int:
+    """Drop idle sessions older than the TTL; running ones are kept. Returns how many."""
+    now = time.monotonic() if now is None else now
+    stale = [session_id for session_id, session in sessions.items()
+             if not (session.task and not session.task.done())
+             and now - session.last_active > SESSION_TTL_SECONDS]
+    for session_id in stale:
+        sessions.pop(session_id, None)
+    return len(stale)
+
 class RunRequest(BaseModel):
     query: str
 
@@ -66,7 +85,6 @@ class UserResponse(BaseModel):
     answer: str
 
 
-import time
 from router.task_router import TaskRouter
 from models.strategy_models import DirectURLStrategy, RegistryStrategy, LLMStrategy
 
@@ -159,6 +177,7 @@ async def _run_agent(session: AgentSession, query: str, plan: TaskPlan):
 
 @app.post("/api/agent/run")
 async def start_agent(req: RunRequest):
+    prune_sessions()
     session = AgentSession(req.query)
     sessions[session.id] = session
 
@@ -187,6 +206,7 @@ async def respond_to_agent(session_id: str, response: UserResponse):
     session = sessions.get(session_id)
     if not session or not session.waiting_for_user:
         return {"status": "not_waiting"}
+    session.last_active = time.monotonic()
 
     clarified_query = f"{session.query}\nUser clarification: {response.answer}"
     plan = planner.plan(session.query, response.answer)
@@ -236,21 +256,27 @@ async def agent_websocket(websocket: WebSocket, session_id: str):
         return
 
     session = sessions[session_id]
-    
+    finished = False
+
     try:
         while True:
             # Wait for events from the agent
             event = await session.queue.get()
             if event is None:
                 # Sentinel reached, execution finished
+                finished = True
                 break
             await websocket.send_json(event)
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for session {session_id}")
     finally:
-        # We don't cancel the task automatically on disconnect just in case it's a momentary network blip,
-        # but you could add session cleanup here.
-        pass
+        # A finished run whose events were all delivered is done with. A
+        # disconnect may be a network blip, so that session is kept for the
+        # UI to reconnect, and prune_sessions() removes it if it never does.
+        if finished:
+            sessions.pop(session_id, None)
+        else:
+            session.last_active = time.monotonic()
 
 if __name__ == "__main__":
     import uvicorn
