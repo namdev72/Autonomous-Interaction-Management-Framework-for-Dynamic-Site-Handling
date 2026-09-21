@@ -1,6 +1,7 @@
 import re
 from datetime import datetime, timezone
 from typing import List
+from urllib.parse import urljoin
 
 from loguru import logger
 
@@ -41,6 +42,11 @@ def _relevant_title(title: str, subject: str) -> bool:
     return matches >= min(2, len(tokens))
 
 
+def _is_candidate(title: str, subject: str) -> bool:
+    """Drop accessories and unrelated results, so they cannot win on price."""
+    return not any(term in title.lower() for term in NON_PRODUCT_TERMS) and _relevant_title(title, subject)
+
+
 async def _amazon_offers(page, policy: SitePolicy, subject: str, limit: int = 10) -> List[ProductOffer]:
     cards = page.locator('[data-component-type="s-search-result"]')
     offers = []
@@ -51,7 +57,7 @@ async def _amazon_offers(page, policy: SitePolicy, subject: str, limit: int = 10
             continue
         title_locator = card.locator("h2").first
         title = (await title_locator.text_content() or "").strip()
-        if any(term in title.lower() for term in NON_PRODUCT_TERMS) or not _relevant_title(title, subject):
+        if not _is_candidate(title, subject):
             continue
         href = await title_links.first.get_attribute("href", timeout=3000)
         price_locator = card.locator(".a-price .a-offscreen")
@@ -71,24 +77,49 @@ async def _amazon_offers(page, policy: SitePolicy, subject: str, limit: int = 10
     return offers
 
 
-async def _flipkart_offers(page, policy: SitePolicy, limit: int = 10) -> List[ProductOffer]:
-    cards = page.locator('div[data-id]')
+# Flipkart's class names are generated and change between deploys, so cards are
+# read by structure. Both result layouts (list for phones, grid for
+# accessories) share it: the selling price is the first element whose whole
+# text is a rupee amount and that is not struck through (the struck one is the
+# MRP), and the rating is the badge whose whole text is a 1-5 score.
+FLIPKART_CARDS_JS = r"""
+(limit) => [...document.querySelectorAll('div[data-id]')].slice(0, limit).map(card => {
+  const text = el => (el.innerText || '').trim();
+  const struck = el => getComputedStyle(el).textDecorationLine.includes('line-through');
+  const elements = [...card.querySelectorAll('*')];
+  const leaves = elements.filter(el => el.children.length === 0);
+  const link = card.querySelector('a[href*="/p/"]');
+  const price = leaves.find(el => /^₹[\d,]+(\.\d+)?$/.test(text(el)) && !struck(el));
+  const rating = elements.find(el => /^[1-5](\.\d)?$/.test(text(el)));
+  return {
+    href: link ? link.getAttribute('href') : null,
+    title: card.querySelector('a[title]')?.getAttribute('title') || card.querySelector('img[alt]')?.getAttribute('alt') || '',
+    price: price ? text(price) : null,
+    rating: rating ? text(rating) : null,
+  };
+})
+"""
+
+
+async def _flipkart_offers(page, policy: SitePolicy, subject: str, limit: int = 10) -> List[ProductOffer]:
+    try:
+        await page.wait_for_selector("div[data-id]", timeout=5000)
+    except Exception:
+        return []
     offers = []
-    for index in range(min(await cards.count(), limit)):
-        card = cards.nth(index)
-        links = card.locator("a")
-        href = await links.first.get_attribute("href", timeout=3000) if await links.count() else None
-        title = (await links.first.text_content() or "").strip() if href else ""
-        text = (await card.text_content() or "").strip()
-        if title and href:
-            offers.append(ProductOffer(
-                site=policy.key,
-                title=title,
-                product_url=f"https://{policy.domains[0]}{href}",
-                price=_number(text),
-                currency=policy.currency,
-                source_timestamp=datetime.now(timezone.utc).isoformat(),
-            ))
+    for card in await page.evaluate(FLIPKART_CARDS_JS, limit):
+        title = card["title"].strip()
+        if not (title and card["href"]) or not _is_candidate(title, subject):
+            continue
+        offers.append(ProductOffer(
+            site=policy.key,
+            title=title,
+            product_url=urljoin(f"https://{policy.domains[0]}/", card["href"]),
+            price=_number(card["price"]),
+            currency=policy.currency,
+            rating=float(card["rating"]) if card["rating"] else None,
+            source_timestamp=datetime.now(timezone.utc).isoformat(),
+        ))
     return offers
 
 
@@ -105,7 +136,7 @@ async def search_site(policy: SitePolicy, task: TaskPlan) -> SiteRunResult:
         if policy.key in {"amazon_in", "amazon_us"}:
             offers = await _amazon_offers(controller.page, policy, task.subject)
         elif policy.key == "flipkart_in":
-            offers = await _flipkart_offers(controller.page, policy)
+            offers = await _flipkart_offers(controller.page, policy, task.subject)
         else:
             offers = []
         warnings = [] if offers else ["No public product cards were found; the site layout or access state may need review."]

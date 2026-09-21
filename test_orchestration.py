@@ -204,6 +204,39 @@ class SearchSiteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.warnings, ["Initial navigation failed."])
 
 
+class FakeFlipkartPage:
+    """Returns cards shaped like FLIPKART_CARDS_JS output from the live site."""
+
+    def __init__(self, cards):
+        self.cards = cards
+
+    async def wait_for_selector(self, selector, timeout=None):
+        return None
+
+    async def evaluate(self, script, limit):
+        return self.cards[:limit]
+
+
+class FlipkartOfferTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cards_become_offers_and_accessories_are_dropped(self):
+        from sites.adapters import _flipkart_offers
+        from sites.registry import policy_for
+
+        page = FakeFlipkartPage([
+            {"href": "/apple-iphone-16-black-128-gb/p/itmb07?pid=MOB1", "title": "Apple iPhone 16 (Black, 128 GB)", "price": "₹69,900", "rating": "4.6"},
+            {"href": "/rising-byte-back-cover-iphone-16/p/itmd48", "title": "RISING BYTE Back Cover for IPHONE 16", "price": "₹269", "rating": "4"},
+            {"href": "/apple-iphone-16-teal-256-gb/p/itm2b7", "title": "Apple iPhone 16 (Teal, 256 GB)", "price": "₹79,900", "rating": None},
+        ])
+
+        offers = await _flipkart_offers(page, policy_for("flipkart_in"), "iPhone 16")
+
+        self.assertEqual([o.title for o in offers], ["Apple iPhone 16 (Black, 128 GB)", "Apple iPhone 16 (Teal, 256 GB)"])
+        self.assertEqual(offers[0].price, 69900.0)
+        self.assertEqual(offers[0].rating, 4.6)
+        self.assertIsNone(offers[1].rating)
+        self.assertEqual(offers[0].product_url, "https://flipkart.com/apple-iphone-16-black-128-gb/p/itmb07?pid=MOB1")
+
+
 class ComparisonRunStatusTests(unittest.IsolatedAsyncioTestCase):
     async def _completed_event(self, statuses):
         import server
