@@ -2,11 +2,14 @@ import asyncio
 import os
 import time
 import uuid
-from typing import Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Optional, Any
 
 from loguru import logger
 
 from agents.goal_verifier import GoalVerifier
+from agents.goal_compiler import GoalCompiler
+from agents.progress_tracker import ProgressTracker
+from browser.state_observer import StateObserver
 from agents.recovery_policy import RecoveryPolicy
 from agents.step_verifier import StepVerifier
 from browser.actions import BrowserExecutor
@@ -19,6 +22,7 @@ from memory.history import MemoryState, StepRecord
 from memory.signature import descriptor_for_target, page_key, target_for_descriptor, view_signature
 from models.action_models import AgentAction
 from models.orchestration_models import ActionResult, AgentRunResult, AgentState, StepDecision
+from models.goal_models import GoalContract, ObservedState
 
 
 async def default_cli_printer(event_type: str, data: dict):
@@ -61,7 +65,10 @@ class ReasoningAgent:
         self.context_builder = ContextBuilder()
         self.memory = MemoryState()
         self.recovery_policy = RecoveryPolicy()
+        self.goal_compiler = GoalCompiler(self.llm_client)
         self.goal_verifier = GoalVerifier(self.llm_client)
+        self.progress_tracker = ProgressTracker()
+        self._verification_cache = None
         self.step_verifier = StepVerifier()
         self.max_iterations = max_iterations
         self.on_event = on_event if on_event is not None else default_cli_printer
@@ -84,10 +91,11 @@ class ReasoningAgent:
             logger.error(f"Failed to capture screenshot: {e}")
         return None
 
-    def _agent_system_prompt(self, user_query: str) -> str:
+    def _agent_system_prompt(self, user_query: str, strategy_note: str = "") -> str:
         return f"""
         You are an autonomous web browser agent.
         Your goal is: {user_query}
+        {strategy_note}
 
         You only see elements currently visible in the viewport. If the target is not visible, use scroll.
         Prefer precise data-playwright-id targets from the context, such as pw-id-3.
@@ -101,7 +109,7 @@ class ReasoningAgent:
         - extract: extract text from target.
         - back: go to the previous page.
         - hover, drag_to, press_key, select: use only when required by the page control.
-        - done: use only after the user goal is satisfied by visible page evidence or extracted data.
+        - done: you MUST output this action immediately once the main user goal is satisfied. Do not perform redundant verification or scrolling if the target is already reached or visible.
 
         If an element is hidden in an iframe, modal, captcha, or visual-only widget, set fallback_to_vision true.
 
@@ -186,10 +194,10 @@ class ReasoningAgent:
             last_result=last_result,
         )
 
-    async def _decide_next_step(self, state: AgentState) -> Optional[StepDecision]:
+    async def _decide_next_step(self, state: AgentState, strategy_note: str = "") -> Optional[StepDecision]:
         await self._emit_log("Querying LLM for next action...")
         response_json = await self.llm_client.generate_json(
-            self._agent_system_prompt(state.user_query),
+            self._agent_system_prompt(state.user_query, strategy_note),
             self._agent_user_prompt(state),
         )
         if not response_json:
@@ -371,49 +379,78 @@ class ReasoningAgent:
             await self._emit_log(f"Extracted: {result.value}", "success")
             await self._emit("extraction", {"key": key, "value": result.value})
 
-    async def execute_task(self, user_query: str, fallback_url: Optional[str] = None) -> AgentRunResult:
+    async def _verify_goal(self, contract: GoalContract, state: ObservedState):
         """
-        fallback_url is where to start when the query names no website. Callers
-        that restrict navigation pass an approved URL, since the default web
-        search would itself be blocked.
+        Ask the goal verifier, unless it already judged this exact page state.
+
+        Verification is an LLM call on every iteration; re-asking about a page
+        that has not changed (a step that did nothing, or a "done" claim made
+        right after the iteration's own check) cannot give new information.
         """
+        fingerprint = self.progress_tracker.fingerprint(state)
+        if self._verification_cache and self._verification_cache[0] == fingerprint:
+            await self._emit_log("Page unchanged since the last goal check; reusing its result.")
+            return self._verification_cache[1]
+        result = await self.goal_verifier.verify(contract, state)
+        # An empty LLM reply (e.g. rate limited) is not an answer; retry it next time.
+        if not (result.status == "UNKNOWN" and result.confidence == 0.0):
+            self._verification_cache = (fingerprint, result)
+        return result
+
+    async def execute_task(self, user_query: str, strategy: Optional[Any] = None) -> AgentRunResult:
         logger.info(f"Starting agent task: {user_query}")
         await self._emit_log(f"Starting task: {user_query}")
 
         last_action = None
         last_result = None
         iterations = 0
+        self._verification_cache = None
 
         try:
             if not self.llm_client.is_configured:
                 await self._emit_log("GROQ_API_KEY is not configured. Add it to .env before running the agent.", "error")
                 return AgentRunResult(completed=False, iterations=0, reason="missing_api_key")
 
-            intent = await self.intent_parser.parse(user_query)
-            await self._emit_log(f"Parsed Intent: {intent.model_dump_json()}")
+            # 1. Compile Goal
+            contract = await self.goal_compiler.compile(user_query)
+            await self._emit_log(f"Goal Compiled: {contract.model_dump_json()}")
+            
+            target_url = None
+            strategy_note = ""
 
-            if not intent.website_url and fallback_url:
-                intent.website_url = fallback_url
-                await self._emit_log(f"No website named; starting at approved site: {fallback_url}", "warning")
-            elif not intent.website_url:
+            if strategy:
+                if getattr(strategy, "strategy_type", None) == "direct_url":
+                    target_url = strategy.url
+                    strategy_note = "(SYSTEM OVERRIDE: The navigation portion of your goal was handled automatically. Do not repeat it.)"
+                    await self._emit_log(f"Using Direct URL Strategy: {target_url}", "success")
+                elif getattr(strategy, "strategy_type", None) == "registry":
+                    target_url = strategy.domain
+                    await self._emit_log(f"Using Registry Fallback Strategy: {target_url}", "success")
+
+            # The intent parser only exists to find a starting URL, so it costs
+            # an LLM call only when the strategy did not already provide one.
+            if not target_url:
+                intent = await self.intent_parser.parse(user_query)
+                target_url = intent.website_url
+
+            if not target_url:
                 import urllib.parse
-
                 query_encoded = urllib.parse.quote(user_query)
-                intent.website_url = f"https://duckduckgo.com/?q={query_encoded}"
+                target_url = f"https://duckduckgo.com/?q={query_encoded}"
                 await self._emit_log(f"Falling back to web search for: {user_query}", "warning")
 
             # Checked before launching a browser, so a site the user named but
             # that is not approved gets a clear answer rather than a generic
             # navigation failure.
-            if not self.browser_controller.is_allowed_url(intent.website_url):
+            if not self.browser_controller.is_allowed_url(target_url):
                 approved = ", ".join(sorted(self.browser_controller.allowed_hosts or []))
                 await self._emit_log(
-                    f"{intent.website_url} is not an approved site. Approved sites: {approved}.", "error"
+                    f"{target_url} is not an approved site. Approved sites: {approved}.", "error"
                 )
                 return AgentRunResult(completed=False, iterations=0, reason="site_not_approved")
 
-            await self._emit_log(f"Launching browser and navigating to {intent.website_url}...")
-            success = await self.browser_controller.open_website(intent.website_url)
+            await self._emit_log(f"Launching browser and navigating to {target_url}...")
+            success = await self.browser_controller.open_website(target_url)
             if not success:
                 await self._emit_log("Failed to load website. Aborting.", "error")
                 return AgentRunResult(completed=False, iterations=0, reason="initial_navigation_failed")
@@ -421,12 +458,46 @@ class ReasoningAgent:
             await self.browser_controller.wait_for_load()
             executor = BrowserExecutor(self.browser_controller.page, self.browser_controller.allowed_hosts)
 
+            # THE GOLDEN LOOP
             for iterations in range(1, self.max_iterations + 1):
                 logger.info(f"--- Iteration {iterations} ---")
                 await self._emit_log(f"--- Iteration {iterations} ---")
 
+                # 1. OBSERVE (Semantic/Static Evidence)
+                observer = StateObserver(self.browser_controller.page)
+                observed_state = await observer.observe()
+
+                # 2. VERIFY
+                verification = await self._verify_goal(contract, observed_state)
+                
+                if verification.status == "ACHIEVED":
+                    await self._emit_log("Goal verified as complete. Halting execution.", "success")
+                    return AgentRunResult(
+                        completed=True,
+                        iterations=iterations,
+                        reason="goal_achieved",
+                        extracted_data=self.memory.extracted_data,
+                        last_url=observed_state.url,
+                    )
+                    
+                if verification.status == "UNKNOWN":
+                    # If we don't have enough static evidence, we might need vision later, 
+                    # but for now we continue the loop.
+                    await self._emit_log("Goal verification is UNKNOWN. Continuing...", "warning")
+                    
+                if verification.status == "NOT_ACHIEVED":
+                    await self._emit_log(f"Goal verification is NOT_ACHIEVED. Continuing...")
+
+                # 3. DETECT STUCK STATE
+                if self.progress_tracker.is_stuck(observed_state):
+                    await self._emit_log("Agent is stuck with no progress. Aborting.", "error")
+                    return AgentRunResult(completed=False, iterations=iterations, reason="no_progress")
+
+                # 4. EXTRACT INTERACTIVE DOM & BUILD PLANNER STATE
                 state = await self._build_state(user_query, iterations, last_action, last_result)
-                decision = await self._decide_next_step(state)
+                
+                # 5. PLAN
+                decision = await self._decide_next_step(state, strategy_note)
                 if not decision:
                     last_result = ActionResult(success=False, action="invalid", error="Invalid LLM action.")
                     await asyncio.sleep(2)
@@ -438,25 +509,28 @@ class ReasoningAgent:
                     "success",
                 )
                 await self._emit("action", action.model_dump())
-
+                
+                # 6. IF PLANNER SAYS DONE, VERIFY IT INDEPENDENTLY
                 if decision.needs_verification:
-                    verified = await self.goal_verifier.verify(user_query, state.page_context, state.memory_context)
-                    if verified:
-                        await self._emit_log("Goal verified as complete.", "success")
-                        last_result = await self._execute_with_recovery(executor, action, state)
-                        self.memory.add_result(last_result)
-                        self.memory.save_state()
+                    final_state = await observer.observe()
+                    final_verification = await self._verify_goal(contract, final_state)
+                    if final_verification.status == "ACHIEVED":
+                        await self._emit_log("Planner 'done' was verified.", "success")
                         return AgentRunResult(
                             completed=True,
                             iterations=iterations,
-                            reason="goal_verified",
+                            reason="goal_achieved",
                             extracted_data=self.memory.extracted_data,
-                            last_url=state.current_url,
+                            last_url=final_state.url,
                         )
-                    await self._emit_log("Done was not verified; continuing with recovery scroll.", "warning")
+                    
+                    await self._emit_log("Planner output 'done' but goal is not verified. Recovering.", "warning")
                     action = self.recovery_policy.from_loop()
 
+                # 7. ACT
                 last_result = await self._execute_with_recovery(executor, action, state)
+                
+                # 8. RECORD
                 self.memory.add_result(last_result)
                 self.memory.save_state()
                 last_action = action
@@ -479,8 +553,8 @@ class ReasoningAgent:
             )
         finally:
             if self.browser_controller.page:
-                await self._emit_log("Task execution finished. Keeping browser open for 1 seconds for visual inspection.")
-                await asyncio.sleep(1)
+                await self._emit_log("Task execution finished. Keeping browser open for 4 seconds for visual inspection.")
+                await asyncio.sleep(4)
             else:
                 await self._emit_log("Task execution finished.")
             await self.browser_controller.close_browser()

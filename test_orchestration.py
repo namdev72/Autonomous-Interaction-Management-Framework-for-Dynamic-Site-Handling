@@ -397,6 +397,12 @@ class ComparisonRunStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["completed"])
         self.assertEqual(result["reason"], "comparison_failed")
 
+    async def test_comparison_never_builds_the_reasoning_agent(self):
+        with patch("server.ReasoningAgent") as agent_class:
+            await self._completed_event(["completed"])
+
+        agent_class.assert_not_called()
+
     async def test_all_blocked_sites_are_reported_as_blocked(self):
         result = await self._completed_event(["blocked", "blocked"])
         self.assertFalse(result["completed"])
@@ -416,17 +422,37 @@ class ConfiguredLLM:
     is_configured = True
 
 
-class WhitelistedStartTests(unittest.IsolatedAsyncioTestCase):
-    async def _agent(self, website_url):
-        from agents.reasoning_agent import ReasoningAgent
+class FakeGoalCompiler:
+    async def compile(self, user_query):
+        from models.goal_models import GoalContract, GoalRequirement
+        return GoalContract(task_id="t", intent="search", requirements=[
+            GoalRequirement(id="r", type="content", description=user_query)])
 
-        async def ignore(event_type, data):
-            pass
 
-        with patch("agents.reasoning_agent.MemoryState"):
-            agent = ReasoningAgent(allowed_hosts={"www.amazon.in"}, on_event=ignore)
-        agent.llm_client = ConfiguredLLM()
-        agent.intent_parser = FakeIntentParser(website_url)
+class FailingIntentParser:
+    async def parse(self, user_query):
+        raise AssertionError("intent parser should not be called")
+
+
+def _test_agent(intent_parser, allowed_hosts=None):
+    from agents.reasoning_agent import ReasoningAgent
+
+    async def ignore(event_type, data):
+        pass
+
+    with patch("agents.reasoning_agent.MemoryState"):
+        agent = ReasoningAgent(allowed_hosts=allowed_hosts, on_event=ignore)
+    agent.llm_client = ConfiguredLLM()
+    agent.goal_compiler = FakeGoalCompiler()
+    agent.intent_parser = intent_parser
+    agent.memory.extracted_data = {}
+    return agent
+
+
+class AgentStartTests(unittest.IsolatedAsyncioTestCase):
+    """Where execute_task starts, per the router's strategy."""
+
+    def _record_navigation(self, agent):
         visited = []
 
         async def record_open(url):
@@ -434,22 +460,110 @@ class WhitelistedStartTests(unittest.IsolatedAsyncioTestCase):
             return False
 
         agent.browser_controller.open_website = record_open
-        return agent, visited
+        return visited
+
+    async def test_direct_url_strategy_starts_there_without_parsing_intent(self):
+        from models.strategy_models import DirectURLStrategy
+        agent = _test_agent(FailingIntentParser(), allowed_hosts={"www.amazon.in"})
+        visited = self._record_navigation(agent)
+        strategy = DirectURLStrategy(url="https://www.amazon.in/s?k=iPhone%2016", website="amazon")
+
+        await agent.execute_task("search iPhone 16 on amazon india", strategy=strategy)
+
+        self.assertEqual(visited, ["https://www.amazon.in/s?k=iPhone%2016"])
 
     async def test_unapproved_named_site_stops_before_launching_a_browser(self):
-        agent, visited = await self._agent("https://books.toscrape.com/")
+        agent = _test_agent(FakeIntentParser("https://books.toscrape.com/"), allowed_hosts={"www.amazon.in"})
+        visited = self._record_navigation(agent)
 
-        result = await agent.execute_task("go to books.toscrape.com", fallback_url="https://www.amazon.in/s?k=x")
+        result = await agent.execute_task("go to books.toscrape.com")
 
         self.assertEqual(result.reason, "site_not_approved")
         self.assertEqual(visited, [])
 
-    async def test_query_without_a_site_starts_at_the_fallback(self):
-        agent, visited = await self._agent(None)
+    async def test_unrestricted_query_without_a_site_uses_web_search(self):
+        agent = _test_agent(FakeIntentParser(None))
+        visited = self._record_navigation(agent)
 
-        await agent.execute_task("find iphone 16", fallback_url="https://www.amazon.in/s?k=iphone+16")
+        await agent.execute_task("find iphone 16")
 
-        self.assertEqual(visited, ["https://www.amazon.in/s?k=iphone+16"])
+        self.assertTrue(visited[0].startswith("https://duckduckgo.com/?q="))
+
+
+class FakeObserver:
+    """StateObserver stand-in returning a fixed sequence of page states."""
+    states = []
+
+    def __init__(self, page):
+        pass
+
+    async def observe(self):
+        return FakeObserver.states.pop(0)
+
+
+class CountingVerifier:
+    def __init__(self, statuses):
+        self.statuses = list(statuses)
+        self.calls = 0
+
+    async def verify(self, contract, state):
+        from models.goal_models import VerificationResult
+        self.calls += 1
+        return VerificationResult(status=self.statuses.pop(0), confidence=0.9)
+
+
+class GoalLoopTests(unittest.IsolatedAsyncioTestCase):
+    """One iteration of the goal loop where the planner claims "done"."""
+
+    async def _run(self, states, statuses):
+        from models.orchestration_models import AgentState, StepDecision
+
+        agent = _test_agent(FailingIntentParser())
+        agent.max_iterations = 1
+        agent.memory.extracted_data = {"Extraction_Iter_1": "₹69,900"}
+        agent.goal_verifier = CountingVerifier(statuses)
+
+        async def opened(url):
+            return True
+
+        async def build_state(*args):
+            return AgentState(user_query="q", iteration=1, current_url=states[0].url, page_context="", memory_context="")
+
+        async def decide(*args):
+            return StepDecision(action=AgentAction(action="done"), needs_verification=True)
+
+        async def act(*args):
+            return ActionResult(success=True, action="scroll")
+
+        agent.browser_controller.open_website = opened
+        agent._build_state = build_state
+        agent._decide_next_step = decide
+        agent._execute_with_recovery = act
+        FakeObserver.states = list(states)
+        from models.strategy_models import DirectURLStrategy
+        with patch("agents.reasoning_agent.StateObserver", FakeObserver):
+            result = await agent.execute_task("q", strategy=DirectURLStrategy(url="https://www.amazon.in/s?k=q"))
+        return result, agent.goal_verifier.calls
+
+    async def test_verified_done_keeps_extracted_data(self):
+        from models.goal_models import ObservedState
+        before = ObservedState(url="https://www.amazon.in/s?k=q", title="t")
+        after = ObservedState(url="https://www.amazon.in/dp/1", title="t2")
+
+        result, _ = await self._run([before, after], ["NOT_ACHIEVED", "ACHIEVED"])
+
+        self.assertTrue(result.completed)
+        self.assertEqual(result.extracted_data, {"Extraction_Iter_1": "₹69,900"})
+        self.assertEqual(result.last_url, "https://www.amazon.in/dp/1")
+
+    async def test_unchanged_page_is_not_verified_twice(self):
+        from models.goal_models import ObservedState
+        same = ObservedState(url="https://www.amazon.in/s?k=q", title="t")
+
+        result, calls = await self._run([same, same.model_copy()], ["NOT_ACHIEVED", "ACHIEVED"])
+
+        self.assertEqual(calls, 1)
+        self.assertFalse(result.completed)
 
 
 class RecoveryPolicyTests(unittest.TestCase):
@@ -491,19 +605,91 @@ class BrowserExecutorTests(unittest.IsolatedAsyncioTestCase):
 
 
 class GoalVerifierTests(unittest.IsolatedAsyncioTestCase):
-    async def test_verifier_accepts_complete_response(self):
-        verifier = GoalVerifier(FakeLLMClient({"complete": True, "reason": "found"}))
+    def _inputs(self):
+        from models.goal_models import GoalContract, GoalRequirement, ObservedState
+        contract = GoalContract(task_id="t", intent="find_price", requirements=[
+            GoalRequirement(id="price", type="content", description="Price is shown")])
+        return contract, ObservedState(url="https://example.test", title="Product", visible_text=["₹69,900"])
 
-        complete = await verifier.verify("find price", "page has price", "memory")
+    async def test_verifier_accepts_achieved_response(self):
+        verifier = GoalVerifier(FakeLLMClient({"status": "ACHIEVED", "confidence": 0.9, "evidence": {"found_text": "₹69,900"}}))
 
-        self.assertTrue(complete)
+        result = await verifier.verify(*self._inputs())
 
-    async def test_verifier_rejects_empty_response(self):
+        self.assertEqual(result.status, "ACHIEVED")
+        self.assertEqual(result.confidence, 0.9)
+
+    async def test_verifier_treats_empty_response_as_unknown(self):
         verifier = GoalVerifier(FakeLLMClient({}))
 
-        complete = await verifier.verify("find price", "page", "memory")
+        result = await verifier.verify(*self._inputs())
 
-        self.assertFalse(complete)
+        self.assertEqual(result.status, "UNKNOWN")
+        self.assertEqual(result.confidence, 0.0)
+
+
+class ProgressTrackerTests(unittest.TestCase):
+    def _state(self, scroll_y=0, forms=None):
+        from models.goal_models import ObservedState
+        return ObservedState(url="https://www.amazon.in/s?k=q", title="Results",
+                             visible_text=["same page text"], scroll_y=scroll_y, forms=forms or [])
+
+    def test_scrolling_is_progress(self):
+        from agents.progress_tracker import ProgressTracker
+        tracker = ProgressTracker()
+
+        stuck = [tracker.is_stuck(self._state(scroll_y=y)) for y in (0, 600, 1200)]
+
+        self.assertEqual(stuck, [False, False, False])
+
+    def test_typing_is_progress(self):
+        from agents.progress_tracker import ProgressTracker
+        tracker = ProgressTracker()
+
+        stuck = [tracker.is_stuck(self._state(forms=f)) for f in (
+            [], [{"field": "k", "value": "iph"}], [{"field": "k", "value": "iphone 16"}])]
+
+        self.assertEqual(stuck, [False, False, False])
+
+    def test_identical_states_are_stuck(self):
+        from agents.progress_tracker import ProgressTracker
+        tracker = ProgressTracker()
+
+        stuck = [tracker.is_stuck(self._state()) for _ in range(3)]
+
+        self.assertEqual(stuck, [False, False, True])
+
+
+class BrowserControllerTests(unittest.TestCase):
+    def test_headless_setting_is_respected(self):
+        from browser.controller import BrowserController
+
+        self.assertTrue(BrowserController(headless=True).headless)
+        self.assertFalse(BrowserController().headless)
+
+
+class SiteRegistryTests(unittest.TestCase):
+    def test_search_urls_come_from_the_registry_templates(self):
+        from sites.registry import policy_for
+
+        self.assertEqual(policy_for("amazon_in").build_search_url("iPhone 16"), "https://www.amazon.in/s?k=iPhone%2016")
+        self.assertEqual(policy_for("flipkart_in").build_search_url("a/b"), "https://www.flipkart.com/search?q=a%2Fb")
+
+    def test_home_url_respects_a_home_path(self):
+        from sites.registry import policy_for
+
+        self.assertEqual(policy_for("amazon_us").home_url, "https://www.amazon.com")
+        self.assertEqual(policy_for("google_flights").home_url, "https://www.google.com/travel/flights")
+
+    def test_non_search_task_starts_at_the_site_home(self):
+        from models.strategy_models import RegistryStrategy
+        from router.task_router import TaskRouter
+        query = "book a flight from Delhi to London on google flights"
+
+        strategy = TaskRouter().route_task(query, TaskPlanner().plan(query))
+
+        self.assertIsInstance(strategy, RegistryStrategy)
+        self.assertEqual(strategy.domain, "https://www.google.com/travel/flights")
 
 
 class SignatureTests(unittest.TestCase):
