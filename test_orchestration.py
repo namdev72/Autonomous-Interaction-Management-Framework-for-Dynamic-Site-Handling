@@ -143,6 +143,182 @@ class ComparisonAnswerTests(unittest.TestCase):
 
         self.assertEqual(answer["offers"][0]["title"], "Within budget")
 
+    def test_unmet_rating_is_reported_not_presented_as_matches(self):
+        plan = TaskPlanner().plan("compare iphone 16 on amazon india with at least 4.5 star rating")
+        from models.task_models import ProductOffer, SiteRunResult
+        result = SiteRunResult(
+            site="amazon_in",
+            status="completed",
+            offers=[
+                ProductOffer(site="amazon_in", title="Low rated", product_url="https://example/1", price=50000, currency="INR", rating=3.0, source_timestamp="now"),
+                ProductOffer(site="amazon_in", title="Unrated", product_url="https://example/2", price=60000, currency="INR", source_timestamp="now"),
+            ],
+        )
+
+        answer = compose_comparison_answer(plan, [result])
+
+        self.assertIn("none met a rating of at least 4.5/5", answer["answer"])
+        self.assertNotIn("Lowest matching price", answer["answer"])
+
+    def test_every_unmet_constraint_is_named(self):
+        plan = TaskPlanner().plan("compare iphone 16 on amazon india with at least 4.5 star rating and my budget being 40000")
+        from models.task_models import ProductOffer, SiteRunResult
+        result = SiteRunResult(
+            site="amazon_in",
+            status="completed",
+            offers=[
+                ProductOffer(site="amazon_in", title="Too expensive", product_url="https://example/1", price=80000, currency="INR", rating=4.8, source_timestamp="now"),
+                ProductOffer(site="amazon_in", title="Too low rated", product_url="https://example/2", price=30000, currency="INR", rating=3.9, source_timestamp="now"),
+            ],
+        )
+
+        answer = compose_comparison_answer(plan, [result])
+
+        self.assertIn("a rating of at least 4.5/5 and the budget of INR 40,000.00", answer["answer"])
+        self.assertEqual(len(answer["offers"]), 2)
+
+
+class FakeController:
+    """BrowserController stand-in whose navigation fails and whose close raises."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def open_website(self, url):
+        return False
+
+    async def close_browser(self):
+        raise RuntimeError("Connection closed while reading from the driver")
+
+
+class SearchSiteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_close_failure_does_not_replace_the_site_result(self):
+        from sites.adapters import search_site
+        from sites.registry import policy_for
+
+        plan = TaskPlanner().plan("compare iphone 16 on amazon india")
+        with patch("sites.adapters.BrowserController", FakeController):
+            result = await search_site(policy_for("amazon_in"), plan)
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.warnings, ["Initial navigation failed."])
+
+
+class FakeFlipkartPage:
+    """Returns cards shaped like FLIPKART_CARDS_JS output from the live site."""
+
+    def __init__(self, cards):
+        self.cards = cards
+
+    async def wait_for_selector(self, selector, timeout=None):
+        return None
+
+    async def evaluate(self, script, limit):
+        return self.cards[:limit]
+
+
+class FlipkartOfferTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cards_become_offers_and_accessories_are_dropped(self):
+        from sites.adapters import _flipkart_offers
+        from sites.registry import policy_for
+
+        page = FakeFlipkartPage([
+            {"href": "/apple-iphone-16-black-128-gb/p/itmb07?pid=MOB1", "title": "Apple iPhone 16 (Black, 128 GB)", "price": "₹69,900", "rating": "4.6"},
+            {"href": "/rising-byte-back-cover-iphone-16/p/itmd48", "title": "RISING BYTE Back Cover for IPHONE 16", "price": "₹269", "rating": "4"},
+            {"href": "/apple-iphone-16-teal-256-gb/p/itm2b7", "title": "Apple iPhone 16 (Teal, 256 GB)", "price": "₹79,900", "rating": None},
+        ])
+
+        offers = await _flipkart_offers(page, policy_for("flipkart_in"), "iPhone 16")
+
+        self.assertEqual([o.title for o in offers], ["Apple iPhone 16 (Black, 128 GB)", "Apple iPhone 16 (Teal, 256 GB)"])
+        self.assertEqual(offers[0].price, 69900.0)
+        self.assertEqual(offers[0].rating, 4.6)
+        self.assertIsNone(offers[1].rating)
+        self.assertEqual(offers[0].product_url, "https://flipkart.com/apple-iphone-16-black-128-gb/p/itmb07?pid=MOB1")
+
+
+class ComparisonRunStatusTests(unittest.IsolatedAsyncioTestCase):
+    async def _completed_event(self, statuses):
+        import server
+        from models.task_models import SiteRunResult
+
+        async def fake_compare(plan):
+            return [SiteRunResult(site=f"site_{i}", status=s) for i, s in enumerate(statuses)]
+
+        plan = TaskPlanner().plan("compare iphone 16 on amazon india and flipkart")
+        session = server.AgentSession(plan.subject)
+        with patch("server.compare_sites", fake_compare):
+            await server._run_agent(session, plan.subject, plan)
+
+        events = []
+        while not session.queue.empty():
+            events.append(await session.queue.get())
+        return next(e for e in events if e and e["type"] == "agent_completed")["data"]["result"]
+
+    async def test_one_completed_site_completes_the_comparison(self):
+        result = await self._completed_event(["failed", "completed"])
+        self.assertTrue(result["completed"])
+        self.assertEqual(result["reason"], "comparison_complete")
+
+    async def test_all_failed_sites_fail_the_comparison(self):
+        result = await self._completed_event(["failed", "failed"])
+        self.assertFalse(result["completed"])
+        self.assertEqual(result["reason"], "comparison_failed")
+
+    async def test_all_blocked_sites_are_reported_as_blocked(self):
+        result = await self._completed_event(["blocked", "blocked"])
+        self.assertFalse(result["completed"])
+        self.assertEqual(result["reason"], "sites_blocked")
+
+
+class FakeIntentParser:
+    def __init__(self, website_url):
+        self.website_url = website_url
+
+    async def parse(self, user_query):
+        from llm.intent_parser import ParsedIntent
+        return ParsedIntent(website_url=self.website_url, intent="search")
+
+
+class ConfiguredLLM:
+    is_configured = True
+
+
+class WhitelistedStartTests(unittest.IsolatedAsyncioTestCase):
+    async def _agent(self, website_url):
+        from agents.reasoning_agent import ReasoningAgent
+
+        async def ignore(event_type, data):
+            pass
+
+        with patch("agents.reasoning_agent.MemoryState"):
+            agent = ReasoningAgent(allowed_hosts={"www.amazon.in"}, on_event=ignore)
+        agent.llm_client = ConfiguredLLM()
+        agent.intent_parser = FakeIntentParser(website_url)
+        visited = []
+
+        async def record_open(url):
+            visited.append(url)
+            return False
+
+        agent.browser_controller.open_website = record_open
+        return agent, visited
+
+    async def test_unapproved_named_site_stops_before_launching_a_browser(self):
+        agent, visited = await self._agent("https://books.toscrape.com/")
+
+        result = await agent.execute_task("go to books.toscrape.com", fallback_url="https://www.amazon.in/s?k=x")
+
+        self.assertEqual(result.reason, "site_not_approved")
+        self.assertEqual(visited, [])
+
+    async def test_query_without_a_site_starts_at_the_fallback(self):
+        agent, visited = await self._agent(None)
+
+        await agent.execute_task("find iphone 16", fallback_url="https://www.amazon.in/s?k=iphone+16")
+
+        self.assertEqual(visited, ["https://www.amazon.in/s?k=iphone+16"])
+
 
 class RecoveryPolicyTests(unittest.TestCase):
     def test_failed_locator_recovers_with_scroll(self):

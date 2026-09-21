@@ -12,9 +12,12 @@ interface QueryInputProps {
 
 export function QueryInput({ onRun, onStop, onClear, status }: QueryInputProps) {
   const [query, setQuery] = useState('');
+  // A session waiting for a clarification is still live; starting another
+  // run would orphan it.
+  const busy = status === 'RUNNING' || status === 'WAITING_FOR_USER';
 
   const handleRun = () => {
-    if (query.trim() && status !== 'RUNNING') {
+    if (query.trim() && !busy) {
       onRun(query);
     }
   };
@@ -38,13 +41,13 @@ export function QueryInput({ onRun, onStop, onClear, status }: QueryInputProps) 
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
-          disabled={status === 'RUNNING'}
+          disabled={busy}
         />
       </div>
 
       <div className="flex justify-between items-center">
         <div className="flex gap-2">
-          {status !== 'RUNNING' ? (
+          {!busy ? (
             <button
               onClick={handleRun}
               disabled={!query.trim()}
@@ -65,7 +68,7 @@ export function QueryInput({ onRun, onStop, onClear, status }: QueryInputProps) 
 
           <button
             onClick={onClear}
-            disabled={status === 'RUNNING' || !query.trim()}
+            disabled={busy || !query.trim()}
             className="flex items-center gap-2 px-4 py-2.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 font-medium rounded-lg transition-colors"
           >
             <Trash2 size={18} />

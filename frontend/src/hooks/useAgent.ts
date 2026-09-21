@@ -53,13 +53,18 @@ export function useAgent() {
 
         // Automatically handle status changes based on specific events
         if (parsedEvent.type === 'agent_completed') {
-          setStatus('COMPLETED');
+          // agent_completed means the run ended, not that it succeeded.
+          setStatus(parsedEvent.data.result?.completed ? 'COMPLETED' : 'FAILED');
           setResult(parsedEvent.data.result);
         } else if (parsedEvent.type === 'error') {
           setStatus('FAILED');
         } else if (parsedEvent.type === 'agent_stopped') {
           setStatus('STOPPED');
         }
+      };
+
+      ws.onerror = () => {
+        setStatus('FAILED');
       };
 
       ws.onclose = () => {
@@ -85,6 +90,9 @@ export function useAgent() {
         body: JSON.stringify({ answer }),
       });
       if (!res.ok) throw new Error('Failed to submit clarification');
+      // The backend answers 200 with not_waiting when the session is gone.
+      const { status: responseStatus } = await res.json();
+      if (responseStatus === 'not_waiting') throw new Error('Session is no longer waiting for an answer');
     } catch (err) {
       console.error(err);
       setStatus('FAILED');
@@ -98,6 +106,7 @@ export function useAgent() {
           method: 'POST',
         });
         setStatus('STOPPED');
+        setClarification(null);
         if (wsRef.current) {
           wsRef.current.close();
         }
@@ -108,7 +117,7 @@ export function useAgent() {
   }, []);
 
   const clear = useCallback(() => {
-    if (status !== 'RUNNING') {
+    if (status !== 'RUNNING' && status !== 'WAITING_FOR_USER') {
       setEvents([]);
       setResult(null);
       setClarification(null);

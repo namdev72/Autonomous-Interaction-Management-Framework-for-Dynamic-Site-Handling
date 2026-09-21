@@ -415,6 +415,16 @@ class ReasoningAgent:
                 target_url = f"https://duckduckgo.com/?q={query_encoded}"
                 await self._emit_log(f"Falling back to web search for: {user_query}", "warning")
 
+            # Checked before launching a browser, so a site the user named but
+            # that is not approved gets a clear answer rather than a generic
+            # navigation failure.
+            if not self.browser_controller.is_allowed_url(target_url):
+                approved = ", ".join(sorted(self.browser_controller.allowed_hosts or []))
+                await self._emit_log(
+                    f"{target_url} is not an approved site. Approved sites: {approved}.", "error"
+                )
+                return AgentRunResult(completed=False, iterations=0, reason="site_not_approved")
+
             await self._emit_log(f"Launching browser and navigating to {target_url}...")
             success = await self.browser_controller.open_website(target_url)
             if not success:

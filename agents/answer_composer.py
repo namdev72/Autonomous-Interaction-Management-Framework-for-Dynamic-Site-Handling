@@ -13,9 +13,16 @@ def compose_comparison_answer(task: TaskPlan, results: list[SiteRunResult]) -> d
     warnings = [warning for result in results for warning in result.warnings]
     if not ranked:
         answer = "I could not find public offers matching the request."
-    elif not filtered and maximum_price != float("inf"):
-        answer = f"I found offers, but none were within the budget of {task.currency} {maximum_price:,.2f}."
-        ranked = sorted(offers, key=lambda offer: offer.price or float("inf"))
+    elif not filtered:
+        # Offers exist but every one failed a constraint. Say which, rather
+        # than presenting the unfiltered list as matches.
+        unmet = []
+        if minimum_rating > 0:
+            unmet.append(f"a rating of at least {minimum_rating:g}/5")
+        if maximum_price != float("inf"):
+            currency = f"{task.currency} " if task.currency else ""
+            unmet.append(f"the budget of {currency}{maximum_price:,.2f}")
+        answer = f"I found {len(offers)} offer(s), but none met {' and '.join(unmet)}."
     else:
         lines = [f"Found {len(ranked)} public offer(s) for {task.subject}:"]
         for index, offer in enumerate(ranked[:10], 1):

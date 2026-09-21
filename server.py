@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import sys
 import uuid
 from typing import Dict, Optional, Any
@@ -20,7 +21,7 @@ from agents.answer_composer import compose_comparison_answer
 from agents.task_planner import TaskPlanner
 from models.task_models import TaskPlan
 from sites.adapters import compare_sites
-from sites.registry import allowed_hosts
+from sites.registry import allowed_hosts, policy_for
 
 # Configure loguru for FastAPI
 logger.remove()
@@ -50,7 +51,7 @@ class AgentSession:
         # We wrap the underlying agent events into a unified structure
         await self.queue.put({
             "type": event_type,
-            "timestamp": asyncio.get_event_loop().time(), # we'll format real timestamp in frontend or here
+            "timestamp": datetime.datetime.now().isoformat(),
             "data": data
         })
 
@@ -115,6 +116,8 @@ async def _run_agent(session: AgentSession, query: str, plan: TaskPlan):
     enforce_hosts = getattr(strategy, "source_locked", False)
     hosts = allowed_hosts() if enforce_hosts else None
 
+    # Built only for the reasoning path: it opens Chroma and SQLite
+    # connections that the comparison path never uses.
     agent = ReasoningAgent(
         headless=False,
         max_iterations=20,
@@ -122,21 +125,30 @@ async def _run_agent(session: AgentSession, query: str, plan: TaskPlan):
         on_event=on_event,
     )
     
-    # We pass strategy to reasoning agent
     try:
         await on_event("agent_started", {"message": "Agent execution starting...", "plan": plan.model_dump()})
         if plan.task_type == "compare":
             await on_event("log", {"level": "info", "message": f"Comparing approved sites: {', '.join(plan.candidate_sites)}"})
             comparison = await compare_sites(plan)
             answer = compose_comparison_answer(plan, comparison)
+            # Completed only if at least one site actually ran; a crashed or
+            # blocked site is not a successful comparison.
+            completed = any(result.status == "completed" for result in comparison)
+            if completed:
+                reason = "comparison_complete"
+            elif comparison and all(result.status == "blocked" for result in comparison):
+                reason = "sites_blocked"
+            else:
+                reason = "comparison_failed"
             await on_event("agent_completed", {"result": {
-                "completed": True,
+                "completed": completed,
                 "iterations": 1,
-                "reason": "comparison_complete",
+                "reason": reason,
                 "extracted_data": answer,
                 "last_url": None,
             }})
             return
+            
         result = await agent.execute_task(query, strategy=strategy)
         await on_event("agent_completed", {"result": result.model_dump()})
     except asyncio.CancelledError:
@@ -203,6 +215,12 @@ async def stop_agent(session_id: str):
         session = sessions[session_id]
         if session.task and not session.task.done():
             session.task.cancel()
+            return {"status": "cancelled"}
+        if session.waiting_for_user:
+            # No task exists yet; end the session and close its WebSocket.
+            session.waiting_for_user = False
+            await session.enqueue_event("agent_stopped", {"message": "Agent execution was cancelled by user."})
+            await session.queue.put(None)
             return {"status": "cancelled"}
     return {"status": "not_found"}
 
