@@ -142,7 +142,7 @@ async def _run_agent(session: AgentSession, query: str, plan: TaskPlan):
                 "strategy": "direct_url",
                 "website": strategy.website,
                 "url_generated": True,
-                "browser_actions_saved": 4, # Approximate saved actions
+                "url": strategy.url,
                 "url_generation_latency_ms": url_generation_latency
             })
         elif isinstance(strategy, RegistryStrategy):
