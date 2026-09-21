@@ -17,6 +17,12 @@ CHALLENGE_MARKERS = (
     "sign in to continue",
     "enter your password",
 )
+CHALLENGE_JS = """
+(markers) => {
+  const text = (document.body?.textContent || '').toLowerCase();
+  return markers.some(marker => text.includes(marker));
+}
+"""
 NON_PRODUCT_TERMS = ("case", "cover", "charger", "adapter", "screen protector", "stand", "cable")
 
 
@@ -138,8 +144,9 @@ async def search_site(policy: SitePolicy, task: TaskPlan) -> SiteRunResult:
             return SiteRunResult(site=policy.key, status="failed", warnings=["Initial navigation failed."])
         controller.page.set_default_timeout(5000)
         await controller.wait_for_load()
-        body_text = (await controller.page.locator("body").text_content() or "").lower()
-        if any(marker in body_text for marker in CHALLENGE_MARKERS):
+        # Scanned inside the page: copying a heavy page's whole text out of the
+        # browser just to search it has run the driver out of memory.
+        if await controller.page.evaluate(CHALLENGE_JS, list(CHALLENGE_MARKERS)):
             return SiteRunResult(site=policy.key, status="blocked", warnings=["Login or human verification is required; no bypass was attempted."])
         if policy.key in {"amazon_in", "amazon_us"}:
             offers = await _amazon_offers(controller.page, policy, task.subject)

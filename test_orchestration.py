@@ -191,7 +191,42 @@ class FakeController:
         raise RuntimeError("Connection closed while reading from the driver")
 
 
+class ChallengePage:
+    """Page whose in-page challenge scan finds a marker."""
+
+    def set_default_timeout(self, timeout):
+        pass
+
+    async def evaluate(self, script, markers):
+        from sites.adapters import CHALLENGE_JS
+        assert script == CHALLENGE_JS and "captcha" in markers
+        return True
+
+
+class ChallengeController(FakeController):
+    page = ChallengePage()
+
+    async def open_website(self, url):
+        return True
+
+    async def wait_for_load(self):
+        pass
+
+    async def close_browser(self):
+        pass
+
+
 class SearchSiteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_challenge_page_is_reported_as_blocked(self):
+        from sites.adapters import search_site
+        from sites.registry import policy_for
+
+        plan = TaskPlanner().plan("compare iphone 16 on amazon india")
+        with patch("sites.adapters.BrowserController", ChallengeController):
+            result = await search_site(policy_for("amazon_in"), plan)
+
+        self.assertEqual(result.status, "blocked")
+
     async def test_close_failure_does_not_replace_the_site_result(self):
         from sites.adapters import search_site
         from sites.registry import policy_for
