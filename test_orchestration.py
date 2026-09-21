@@ -284,17 +284,32 @@ class ConfiguredLLM:
     is_configured = True
 
 
-class WhitelistedStartTests(unittest.IsolatedAsyncioTestCase):
-    async def _agent(self, website_url):
-        from agents.reasoning_agent import ReasoningAgent
+class FakeGoalCompiler:
+    async def compile(self, user_query):
+        from models.goal_models import GoalContract, GoalRequirement
+        return GoalContract(task_id="t", intent="search", requirements=[
+            GoalRequirement(id="r", type="content", description=user_query)])
 
-        async def ignore(event_type, data):
-            pass
 
-        with patch("agents.reasoning_agent.MemoryState"):
-            agent = ReasoningAgent(allowed_hosts={"www.amazon.in"}, on_event=ignore)
-        agent.llm_client = ConfiguredLLM()
-        agent.intent_parser = FakeIntentParser(website_url)
+def _test_agent(intent_parser, allowed_hosts=None):
+    from agents.reasoning_agent import ReasoningAgent
+
+    async def ignore(event_type, data):
+        pass
+
+    with patch("agents.reasoning_agent.MemoryState"):
+        agent = ReasoningAgent(allowed_hosts=allowed_hosts, on_event=ignore)
+    agent.llm_client = ConfiguredLLM()
+    agent.goal_compiler = FakeGoalCompiler()
+    agent.intent_parser = intent_parser
+    agent.memory.extracted_data = {}
+    return agent
+
+
+class AgentStartTests(unittest.IsolatedAsyncioTestCase):
+    """Where execute_task starts, per the router's strategy."""
+
+    def _record_navigation(self, agent):
         visited = []
 
         async def record_open(url):
@@ -302,22 +317,24 @@ class WhitelistedStartTests(unittest.IsolatedAsyncioTestCase):
             return False
 
         agent.browser_controller.open_website = record_open
-        return agent, visited
+        return visited
 
     async def test_unapproved_named_site_stops_before_launching_a_browser(self):
-        agent, visited = await self._agent("https://books.toscrape.com/")
+        agent = _test_agent(FakeIntentParser("https://books.toscrape.com/"), allowed_hosts={"www.amazon.in"})
+        visited = self._record_navigation(agent)
 
-        result = await agent.execute_task("go to books.toscrape.com", fallback_url="https://www.amazon.in/s?k=x")
+        result = await agent.execute_task("go to books.toscrape.com")
 
         self.assertEqual(result.reason, "site_not_approved")
         self.assertEqual(visited, [])
 
-    async def test_query_without_a_site_starts_at_the_fallback(self):
-        agent, visited = await self._agent(None)
+    async def test_unrestricted_query_without_a_site_uses_web_search(self):
+        agent = _test_agent(FakeIntentParser(None))
+        visited = self._record_navigation(agent)
 
-        await agent.execute_task("find iphone 16", fallback_url="https://www.amazon.in/s?k=iphone+16")
+        await agent.execute_task("find iphone 16")
 
-        self.assertEqual(visited, ["https://www.amazon.in/s?k=iphone+16"])
+        self.assertTrue(visited[0].startswith("https://duckduckgo.com/?q="))
 
 
 class RecoveryPolicyTests(unittest.TestCase):
@@ -359,19 +376,27 @@ class BrowserExecutorTests(unittest.IsolatedAsyncioTestCase):
 
 
 class GoalVerifierTests(unittest.IsolatedAsyncioTestCase):
-    async def test_verifier_accepts_complete_response(self):
-        verifier = GoalVerifier(FakeLLMClient({"complete": True, "reason": "found"}))
+    def _inputs(self):
+        from models.goal_models import GoalContract, GoalRequirement, ObservedState
+        contract = GoalContract(task_id="t", intent="find_price", requirements=[
+            GoalRequirement(id="price", type="content", description="Price is shown")])
+        return contract, ObservedState(url="https://example.test", title="Product", visible_text=["₹69,900"])
 
-        complete = await verifier.verify("find price", "page has price", "memory")
+    async def test_verifier_accepts_achieved_response(self):
+        verifier = GoalVerifier(FakeLLMClient({"status": "ACHIEVED", "confidence": 0.9, "evidence": {"found_text": "₹69,900"}}))
 
-        self.assertTrue(complete)
+        result = await verifier.verify(*self._inputs())
 
-    async def test_verifier_rejects_empty_response(self):
+        self.assertEqual(result.status, "ACHIEVED")
+        self.assertEqual(result.confidence, 0.9)
+
+    async def test_verifier_treats_empty_response_as_unknown(self):
         verifier = GoalVerifier(FakeLLMClient({}))
 
-        complete = await verifier.verify("find price", "page", "memory")
+        result = await verifier.verify(*self._inputs())
 
-        self.assertFalse(complete)
+        self.assertEqual(result.status, "UNKNOWN")
+        self.assertEqual(result.confidence, 0.0)
 
 
 class SignatureTests(unittest.TestCase):
