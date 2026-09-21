@@ -4,6 +4,15 @@ from typing import Optional
 from models.task_models import TaskPlan
 from sites.registry import classify_sites, policy_for
 
+# Region hints for a plain "amazon". Matched as whole words: as substrings,
+# "us" matched "mouse" and "business" and skipped the region question.
+INDIA_HINTS = ("india", "indian", "inr", "rupee", "rupees")
+US_HINTS = ("usa", "u.s.", "united states", "america", "american", "usd", "dollar", "dollars")
+
+
+def _has_word(text: str, words) -> bool:
+    return any(re.search(rf"(?<!\w){re.escape(word)}(?!\w)", text) for word in words)
+
 
 class TaskPlanner:
     """Low-cost deterministic pre-planner for safe routing and clarification."""
@@ -12,12 +21,14 @@ class TaskPlanner:
         text = f"{query} {clarification or ''}".strip()
         lowered = text.lower()
         sites = classify_sites(text)
-        is_compare = any(word in lowered for word in ("compare", "cheapest", "lowest price", "best price", "across"))
-        is_flight = any(word in lowered for word in ("flight", "flights", "airfare", "ticket price"))
-        task_type = "compare" if is_compare else ("book" if "book" in lowered else "search")
+        is_compare = _has_word(lowered, ("compare", "cheapest", "lowest price", "best price", "across"))
+        is_flight = _has_word(lowered, ("flight", "flights", "airfare", "ticket price"))
+        # Whole words, so "macbook" and "notebook" are not bookings.
+        is_booking = _has_word(lowered, ("book", "booking", "reserve"))
+        task_type = "compare" if is_compare else ("book" if is_booking else "search")
         if is_flight and not sites:
             return TaskPlan(
-                task_type="book" if "book" in lowered else "search",
+                task_type="book" if is_booking else "search",
                 subject=self._subject(text, task_type),
                 candidate_sites=["google_flights"],
                 constraints=self._constraints(lowered),
@@ -25,8 +36,11 @@ class TaskPlanner:
                 clarification_options=["Google Flights"],
             )
 
-        if "amazon" in lowered and "amazon_in" in sites and "amazon_us" not in sites:
-            if not any(token in lowered for token in ("india", ".in", "inr", "rupee", "us", ".com", "usd", "dollar")):
+        if "amazon_in" in sites and "amazon_us" not in sites and not _has_word(lowered, ("amazon india", "amazon.in")):
+            region = self._amazon_region(query, clarification)
+            if region == "amazon_us":
+                sites = ["amazon_us" if key == "amazon_in" else key for key in sites]
+            elif region is None:
                 return TaskPlan(
                     task_type=task_type,
                     subject=self._subject(text, task_type),
@@ -52,6 +66,20 @@ class TaskPlanner:
         )
 
     @staticmethod
+    def _amazon_region(query: str, clarification: Optional[str]) -> Optional[str]:
+        """Region for a plain "amazon", or None when it is unclear and must be asked."""
+        text = f"{query} {clarification or ''}".lower()
+        # "us" is also a pronoun ("help us find"), so in the query only
+        # capitalised "US" counts; a clarification answer is just the region.
+        says_us = _has_word(text, US_HINTS) or "$" in text or re.search(r"\bUS\b", query) is not None
+        if clarification and re.fullmatch(r"\s*us\s*", clarification, re.IGNORECASE):
+            says_us = True
+        says_india = _has_word(text, INDIA_HINTS) or "₹" in text
+        if says_india == says_us:
+            return None
+        return "amazon_in" if says_india else "amazon_us"
+
+    @staticmethod
     def _subject(query: str, task_type: str) -> str:
         """Reduce conversational wording to the product or route being searched."""
         text = query.split("\nUser clarification:", 1)[0].strip()
@@ -72,6 +100,6 @@ class TaskPlanner:
         budget = re.search(r"budget(?:\s+being|\s+is|\s+of|\s*=)?\s*(?:₹|rs\.?|inr)?\s*([\d,]+)", query)
         if budget:
             constraints["maximum_price"] = budget.group(1).replace(",", "")
-        if "new" in query:
+        if _has_word(query, ("new", "brand new")):
             constraints["condition"] = "new"
         return constraints
