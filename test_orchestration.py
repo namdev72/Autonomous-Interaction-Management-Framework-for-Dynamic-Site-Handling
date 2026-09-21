@@ -99,6 +99,44 @@ class TaskPlannerTests(unittest.TestCase):
         self.assertEqual(plan.subject, "Galaxy S6 pro")
         self.assertEqual(plan.constraints["maximum_price"], "40000")
 
+    def test_words_containing_us_do_not_skip_region_question(self):
+        for query in ("search wireless mouse on amazon", "compare business laptops on amazon", "help us find a kettle on amazon"):
+            with self.subTest(query=query):
+                self.assertTrue(self.planner.plan(query).needs_clarification)
+
+    def test_us_hints_choose_amazon_us(self):
+        for query, answer in (("search iphone 16 on amazon in usd", None),
+                              ("search iphone 16 on amazon, I am in the US", None),
+                              ("search iphone 16 on amazon under $800", None),
+                              ("search iphone 16 on amazon", "us"),
+                              ("search iphone 16 on amazon", "United States")):
+            with self.subTest(query=query, answer=answer):
+                plan = self.planner.plan(query, answer)
+                self.assertFalse(plan.needs_clarification)
+                self.assertEqual(plan.preferred_sites, ["amazon_us"])
+                self.assertEqual(plan.currency, "USD")
+
+    def test_india_hints_choose_amazon_in(self):
+        for query, answer in (("search iphone 16 on amazon in rupees", None),
+                              ("search iphone 16 on amazon", "India")):
+            with self.subTest(query=query, answer=answer):
+                plan = self.planner.plan(query, answer)
+                self.assertFalse(plan.needs_clarification)
+                self.assertEqual(plan.preferred_sites, ["amazon_in"])
+
+    def test_conflicting_region_hints_ask(self):
+        self.assertTrue(self.planner.plan("price of iphone 16 on amazon in rupees or dollars").needs_clarification)
+
+    def test_words_containing_book_are_not_bookings(self):
+        for query in ("search macbook air on flipkart", "search notebook on amazon india"):
+            with self.subTest(query=query):
+                self.assertEqual(self.planner.plan(query).task_type, "search")
+        self.assertEqual(self.planner.plan("book a flight on google flights").task_type, "book")
+
+    def test_renewed_is_not_condition_new(self):
+        self.assertNotIn("condition", self.planner.plan("compare renewed iphone 15 on flipkart and amazon india").constraints)
+        self.assertEqual(self.planner.plan("compare brand new iphone 15 on flipkart and amazon india").constraints["condition"], "new")
+
 
 class ComparisonAnswerTests(unittest.TestCase):
     def test_answer_ranks_matching_offers_by_price(self):
