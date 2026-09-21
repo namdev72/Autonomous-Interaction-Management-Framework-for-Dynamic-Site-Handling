@@ -1,169 +1,152 @@
-# Autonomous Web Browser Agent Framework
+# Autonomous Interaction Management Framework for Dynamic Site Handling
 
-An autonomous browser-agent framework that translates natural language instructions into concrete browser actions. It uses Python, Playwright, Groq-compatible OpenAI APIs, structured memory, and an explicit orchestration loop for dynamic site handling.
+A browser agent that carries out web tasks written in plain language, such as *"compare Pixel 10 across Amazon India and Flipkart"* or *"find the cheapest round trip flight from Delhi to Mumbai on Google Flights"*. It asks when a request is ambiguous, stays on approved websites, and does not bypass logins or CAPTCHAs.
 
-## Features
+Built with Python, Playwright, FastAPI, React and Groq-hosted LLMs.
 
-- Natural language task execution through a CLI entry point.
-- Headful or headless Chromium browsing with Playwright.
-- Viewport-focused DOM extraction with injected `data-playwright-id` targets.
-- Shadow DOM and iframe-aware element extraction.
-- Structured action execution results with URL, error, recovery hint, screenshot, and extracted value fields.
-- Deterministic recovery policy for failed actions and repeated loops.
-- Verified completion: `done` actions are checked against the original user goal before stopping.
-- Semantic memory indexing with ChromaDB for current-session page context recall.
-- Optional vision fallback for coordinate-based click recovery.
-- Deterministic task planning with approved-site and region clarification.
-- Public product comparison for Amazon India, Amazon US, and Flipkart.
-- Interactive follow-up questions over the WebSocket session.
+## What it does
 
-## Architecture
+- **Understands the request.** An LLM planner works out the task (search, compare or book), the site, the search text and any constraints (rating, budget, condition). A rule-based planner takes over if the LLM is unavailable.
+- **Asks when information is missing.** For example the Amazon region, flight dates, or an approved site when the user names one that is not approved. The run pauses and resumes once the user answers in the UI.
+- **Compares products across sites.** Amazon and Flipkart results are normalised into one format (price, rating, rating count, availability) and ranked. Accessories and items that can't be bought yet are left out.
+- **Browses on its own.** For other tasks, an agent loop reads the page, decides each click, typing step or extraction, and checks the goal against the page before stopping.
+- **Stays on approved sites.** Navigation is limited to the site registry. Any click, redirect or popup that would leave it is blocked in the browser itself.
+- **Detects CAPTCHA and login pages** during comparisons and stops there. It never tries to bypass them.
+- **Remembers what worked.** Actions that achieved a goal, and routes between pages, are stored and recalled on later runs.
 
-The project features a decoupled architecture with a React-based web interface communicating with a Python FastAPI backend, which orchestrates the autonomous browser agent.
+## How it works
 
 ```text
-React Frontend (Vite)
-  └── WebSockets & REST
-       └── FastAPI Backend (server.py)
-            └── agents.reasoning_agent.ReasoningAgent
-                 ├── browser.controller.BrowserController (Playwright)
-                 ├── llm.llm_client.LLMClient (Groq LLM)
-                 ├── memory.history.MemoryState (ChromaDB)
-                 └── context.context_builder.ContextBuilder
+React UI (frontend/)
+  └── REST + WebSocket
+       └── FastAPI (server.py)
+            ├── LLMTaskPlanner (agents/llm_planner.py), rule-based fallback in agents/task_planner.py
+            │     └── asks the user when information is missing
+            ├── compare  → sites/adapters.py → agents/answer_composer.py
+            └── other    → router/task_router.py → ReasoningAgent (agents/reasoning_agent.py)
+                               ├── GoalCompiler: turns the request into checkable requirements
+                               ├── StateObserver + GoalVerifier: is the goal met, and what is missing?
+                               ├── planner LLM: the next action on the current page
+                               ├── BrowserController / BrowserExecutor: Playwright, with the site guard
+                               └── MemoryState (ChromaDB) + NavigationGraph (SQLite)
 ```
 
-1. **Frontend**: A React/Vite web application that provides a real-time terminal-like interface. It sends tasks to the backend and listens to real-time agent execution logs via WebSockets.
-2. **Backend**: A FastAPI server (`server.py`) that initializes the agent session and handles the `asyncio` event loops required by Playwright and Uvicorn.
-3. **Agent Loop**:
-   - Parses the user intent and opens the target website.
-   - Extracts interactive DOM elements and injects `data-playwright-id` tags.
-   - Builds compact context (DOM + recent semantic memory) and sends it to the LLM.
-   - Decides the next structured action (`AgentAction`).
-   - Executes the action via Playwright, applies automatic recovery for failures, and repeats until the goal is verified as `done`.
-4. **Comparison Flow**:
-   - Classifies the task and asks for an Amazon region or preferred site when needed.
-   - Builds deterministic URLs only for approved domains.
-   - Extracts public product offers into a common schema and ranks them by price and constraints.
-   - Stops at login or human verification pages and reports the required user handoff; it does not bypass those controls.
+Each step of the agent loop:
+1. It observes the page and asks the goal verifier whether the goal is met.
+   - If it is, the run stops with the answer read from the page.
+   - If not, the verifier says what is still missing.
+2. The planner LLM chooses the next action from the page's interactive elements and that feedback.
+3. The action runs. A failed step gets an automatic recovery, and the agent stops if it makes no progress.
 
-## Installation
+## Setup
 
-You need both Python and Node.js installed on your system.
+Requires Python 3.10+ and Node.js 20.19+ (or 22.12+).
 
-### 1. Backend Setup (Python)
+**Backend**
 ```powershell
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 python -m playwright install chromium
 ```
 
-Create a `.env` file in the project root:
+Create `.env` in the project root:
 ```env
-GROQ_API_KEY=your_groq_api_key_here
+GROQ_API_KEY=your_groq_api_key
+# Optional: more keys, used in turn when one hits a rate limit
+GROQ_API_KEY_2=
 MODEL_NAME=qwen/qwen3.8-27b
+# Optional: leave blank unless you have a vision-capable model
 VISION_MODEL_NAME=
+# Optional: how many runs of screenshots to keep (default 20)
+MAX_SCREENSHOT_RUNS=20
 ```
 
-### 2. Frontend Setup (Node.js)
-Open a new terminal or use the same one:
+Groq's free tier allows about 200,000 tokens per day **per account**, and one agent step uses about 3,500. Extra keys only help if they come from different accounts. `python scripts/check_groq_models.py` checks each configured key.
+
+**Frontend**
 ```powershell
 cd frontend
 npm install
 ```
 
-## Usage
+## Running
 
-You can run the project either through the full Web UI (recommended) or directly via the CLI.
-
-### Option A: Run with Web UI (Frontend + Backend)
-
-You will need two separate terminal windows.
-
-**Terminal 1: Start the Backend API**
-Make sure your virtual environment is activated, then run:
+**Web UI (recommended).** Use two terminals:
 ```powershell
-python server.py
+python server.py            # backend on http://localhost:8000
 ```
-*(The backend will start on `http://localhost:8000`)*
-
-**Terminal 2: Start the Frontend UI**
 ```powershell
 cd frontend
-npm run dev
+npm run dev                 # UI on http://localhost:5173
 ```
-*(The UI will be accessible at `http://localhost:5173`. Enter your task there to watch the agent work in real-time.)*
+To run the UI against a backend on another machine, create `frontend/.env` with `VITE_API_URL=http://<host>:8000`.
 
-The UI talks to `http://localhost:8000` by default. To use a backend elsewhere, create `frontend/.env` with `VITE_API_URL=http://<host>:8000` and restart `npm run dev`.
-
-### Option B: Run in CLI Mode
-
-If you prefer to run the agent headlessly or directly from the terminal without the UI:
-
-Interactive mode:
-```bash
-python main.py
+**Command line (development).** `main.py` runs the browsing agent directly, without the planner, clarifications or the approved-site restriction:
+```powershell
+python main.py "search running shoes on flipkart"
+python main.py --headless --max-iterations 20 "your task"
 ```
 
-Single task:
-```bash
-python main.py "go to books.toscrape.com and extract the price of a light in the attic"
+### Example requests
+```text
+compare pixel 10 across amazon india and flipkart
+compare pixel 10 across amazon india and flipkart with at least 4.3 star rating
+compare iphone 16 prices on amazon                      (asks which region)
+find the cheapest round trip flight from Delhi to Mumbai on google flights   (asks for dates)
+search running shoes on flipkart and open the product page of the first result
+search iphone 16 on ebay                                (not approved: offers approved sites)
 ```
 
-Useful runtime flags:
-```bash
-python main.py --headless --max-iterations 20 --model qwen/qwen3.8-27b "open wikipedia and search for Samsung"
-```
+## Approved sites
 
-### Interactive comparison examples
+Amazon India, Amazon US, Flipkart and Google Flights, defined in `sites/registry.py` with their domains, country, currency and search URL. Price comparison works on sites with a product extractor, currently Amazon and Flipkart. Other approved sites are handled by the browsing agent.
 
-Use the Web UI for requests such as:
+## Project structure
 
 ```text
-compare iPhone 16 prices on Amazon India and Flipkart
-compare iPhone 16 prices on Amazon
-check ticket price for a flight from Delhi to London
+agents/     planning, goal checking, the agent loop, recovery, answer composition
+browser/    Playwright control, DOM and page-state extraction, action execution
+context/    prompt context building
+llm/        Groq client (key rotation, rate-limit handling), intent parser
+memory/     ChromaDB page and action memory, SQLite navigation graph
+models/     Pydantic data models
+router/     start strategy: direct search URL, site home page, or LLM-led
+sites/      site registry and comparison extractors
+frontend/   React + Vite UI
+tests/      unit tests (no browser or API calls)
+scripts/    live checks against real sites and the Groq API
+docs/       earlier project documents
 ```
-
-The UI asks a follow-up when the Amazon region or a preferred flight website is ambiguous. Comparison runs use approved public-site adapters and return normalized offers, price, rating, source URL, and warnings.
-
-The current approved sites are Amazon India, Amazon US, Flipkart, and Google Flights. Site policy is defined in `sites/registry.py`; adding a domain requires an explicit policy and adapter.
 
 ## Tests
 
-Run deterministic orchestration tests:
-
-```bash
-python -m unittest test_orchestration.py
+Run the unit tests from the project root:
+```powershell
+python -m pytest
+```
+The tests live in `tests/`, and `pytest.ini` points pytest there, so no path is needed. The old `python -m unittest test_orchestration.py` no longer works, because the test files have moved. The unit tests don't use a browser or the Groq API. For a live end-to-end check:
+```powershell
+python scripts/live_agent_run.py "search running shoes on flipkart"
 ```
 
-Run a syntax compile pass:
+## Runtime data
 
-```bash
-python -m compileall agents browser context llm memory models main.py test_orchestration.py
-```
+These are all git-ignored:
+- `memory_db/`: agent memory, persisted across runs. Delete it to start fresh.
+- `screenshots/<run id>/`: one screenshot per step. Only the most recent runs are kept.
+- `execution_history.log`: the CLI log.
 
-## Notes
+## Known limitations
 
-- Runtime memory is written to `memory_db/` and ignored by Git.
-- Screenshots are written to `screenshots/`.
-- Full browser runs require a valid `GROQ_API_KEY`.
-- A vision model is optional. Leave `VISION_MODEL_NAME` blank unless your Groq account provides a vision-capable model; DOM-based actions continue to work without it.
+- **Site coverage.** Only registry sites are allowed. Adding a site means a registry entry, plus an extractor if it should take part in comparisons.
+- **Offer fields.** Product condition is not extracted yet, and availability comes from Flipkart only. Amazon US has not been tested live.
+- **Flight answers.** Each value in an answer is checked to be on the page, but not that all values come from the same flight.
+- **CAPTCHA and login detection** covers comparisons only. The browsing agent stops through its step and progress limits instead.
+- **Vision fallback** needs `VISION_MODEL_NAME`; without it, vision is not offered.
 
 ## Troubleshooting
 
-If startup reports that `llama-3.3-70b-versatile` is retired, the client automatically replaces it with the configured default. Clear a stale override from the current PowerShell session before restarting the agent:
-
-```powershell
-Remove-Item Env:MODEL_NAME -ErrorAction SilentlyContinue
-```
-
-If ChromaDB reports `range start index 10 out of range for slice of length 9`, the active Python environment has an older Chroma release than the existing memory schema. Activate `.venv` and reinstall the pinned dependencies:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-```
-
-The memory database does not need to be deleted.
+- **The agent keeps waiting, or logs "rate limit".** A Groq key is out of quota. Add `GROQ_API_KEY_2` from another account, or wait for the reset time shown in the log.
+- **`llama-3.3-70b-versatile` is retired.** The client switches to the default model. Clear a stale override with `Remove-Item Env:MODEL_NAME`.
+- **ChromaDB: `range start index 10 out of range for slice of length 9`.** The environment has an older Chroma release. Activate `.venv` and run `python -m pip install -r requirements.txt`.
