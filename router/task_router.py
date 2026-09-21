@@ -41,7 +41,7 @@ class TaskRouter:
         # Google Flights defaults to a round trip with dates it picks, so "the
         # cheapest flight" came back as a round-trip fare. Search one way unless
         # the user said which kind of trip.
-        if search_query and "flight_search" in policy.capabilities and not TRIP_TYPE_GIVEN.search(user_query):
+        if search_query and "flight_search" in policy.capabilities and not TRIP_TYPE_GIVEN.search(f"{user_query} {search_query}"):
             search_query = f"{search_query} one way"
 
         if plan.task_type in ["search", "compare"] and search_query:

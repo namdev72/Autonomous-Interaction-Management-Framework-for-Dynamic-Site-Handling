@@ -18,7 +18,7 @@ from loguru import logger
 # Import the existing agent architecture
 from agents.reasoning_agent import ReasoningAgent
 from agents.answer_composer import compose_comparison_answer
-from agents.task_planner import TaskPlanner
+from agents.llm_planner import LLMTaskPlanner
 from models.task_models import TaskPlan
 from sites.adapters import compare_sites
 from sites.registry import allowed_hosts, policy_for
@@ -46,6 +46,8 @@ class AgentSession:
         self.query = query
         self.plan: Optional[TaskPlan] = None
         self.waiting_for_user = False
+        # Every answer so far: a second question must not lose the first answer.
+        self.answers: list[str] = []
         
     async def enqueue_event(self, event_type: str, data: dict):
         # We wrap the underlying agent events into a unified structure
@@ -70,7 +72,9 @@ import time
 from router.task_router import TaskRouter
 from models.strategy_models import DirectURLStrategy, RegistryStrategy, LLMStrategy
 
-planner = TaskPlanner()
+# The LLM understands the request; the registry checks it, and the rule-based
+# planner takes over if the LLM fails.
+planner = LLMTaskPlanner()
 router = TaskRouter()
 
 async def _run_agent(session: AgentSession, query: str, plan: TaskPlan):
@@ -162,7 +166,7 @@ async def start_agent(req: RunRequest):
     session = AgentSession(req.query)
     sessions[session.id] = session
 
-    plan = planner.plan(req.query)
+    plan = await planner.plan(req.query)
     session.plan = plan
     if plan.needs_clarification:
         session.waiting_for_user = True
@@ -188,8 +192,9 @@ async def respond_to_agent(session_id: str, response: UserResponse):
     if not session or not session.waiting_for_user:
         return {"status": "not_waiting"}
 
-    clarified_query = f"{session.query}\nUser clarification: {response.answer}"
-    plan = planner.plan(session.query, response.answer)
+    session.answers.append(response.answer)
+    clarified_query = f"{session.query}\nUser clarification: {'; '.join(session.answers)}"
+    plan = await planner.plan(session.query, session.answers)
     session.plan = plan
     if plan.needs_clarification:
         await session.queue.put({
