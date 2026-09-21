@@ -1,0 +1,25 @@
+from loguru import logger
+import hashlib
+from models.goal_models import ObservedState
+
+class ProgressTracker:
+    def __init__(self):
+        self.history = []
+        self.MAX_NO_PROGRESS = 3
+        
+    def _hash_state(self, state: ObservedState) -> str:
+        selected_strs = [str(x) for x in state.selected_states]
+        s = f"{state.url}|{state.title}|{'|'.join(selected_strs)}|{'|'.join(state.visible_text[:10])}"
+        return hashlib.md5(s.encode()).hexdigest()
+        
+    def is_stuck(self, state: ObservedState) -> bool:
+        current_hash = self._hash_state(state)
+        self.history.append(current_hash)
+        
+        # Check if the last N hashes are identical
+        if len(self.history) >= self.MAX_NO_PROGRESS:
+            recent = self.history[-self.MAX_NO_PROGRESS:]
+            if len(set(recent)) == 1:
+                logger.warning("Agent appears stuck (no meaningful state change).")
+                return True
+        return False

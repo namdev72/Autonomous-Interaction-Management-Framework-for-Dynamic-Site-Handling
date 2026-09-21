@@ -1,0 +1,25 @@
+{
+  "amazon": {
+    "name": "Amazon",
+    "domains": {
+      "us": "https://www.amazon.com",
+      "in": "https://www.amazon.in"
+    },
+    "default_region": "in",
+    "search_supported": true,
+    "routes": {
+      "search": "/s?k={query}"
+    }
+  },
+  "flipkart": {
+    "name": "Flipkart",
+    "domains": {
+      "in": "https://www.flipkart.com"
+    },
+    "default_region": "in",
+    "search_supported": true,
+    "routes": {
+      "search": "/search?q={query}"
+    }
+  }
+}
