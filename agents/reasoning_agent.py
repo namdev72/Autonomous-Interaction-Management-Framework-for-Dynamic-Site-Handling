@@ -520,7 +520,7 @@ class ReasoningAgent:
                     await self._emit_log(f"Goal verification is NOT_ACHIEVED. Continuing...")
 
                 # 3. DETECT STUCK STATE
-                if self.progress_tracker.is_stuck(observed_state):
+                if self.progress_tracker.is_stuck(observed_state, self.memory.extracted_data.values()):
                     await self._emit_log("Agent is stuck with no progress. Aborting.", "error")
                     return AgentRunResult(completed=False, iterations=iterations, reason="no_progress")
 

@@ -574,6 +574,24 @@ class ProgressTrackerTests(unittest.TestCase):
 
         self.assertEqual(stuck, [False, False, True])
 
+    def test_extracting_a_new_value_is_progress(self):
+        from agents.progress_tracker import ProgressTracker
+        tracker = ProgressTracker()
+
+        stuck = [tracker.is_stuck(self._state(), values) for values in (
+            [], ["₹11,860"], ["₹11,860", "IndiGo"])]
+
+        self.assertEqual(stuck, [False, False, False])
+
+    def test_extracting_the_same_value_again_is_not_progress(self):
+        from agents.progress_tracker import ProgressTracker
+        tracker = ProgressTracker()
+
+        stuck = [tracker.is_stuck(self._state(), values) for values in (
+            ["₹11,860"], ["₹11,860", "₹11,860"], ["₹11,860", "₹11,860", "₹11,860"])]
+
+        self.assertEqual(stuck, [False, False, True])
+
 
 class BrowserControllerTests(unittest.TestCase):
     def test_headless_setting_is_respected(self):
