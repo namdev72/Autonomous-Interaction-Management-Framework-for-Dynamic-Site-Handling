@@ -265,6 +265,12 @@ class ComparisonRunStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["completed"])
         self.assertEqual(result["reason"], "comparison_failed")
 
+    async def test_comparison_never_builds_the_reasoning_agent(self):
+        with patch("server.ReasoningAgent") as agent_class:
+            await self._completed_event(["completed"])
+
+        agent_class.assert_not_called()
+
     async def test_all_blocked_sites_are_reported_as_blocked(self):
         result = await self._completed_event(["blocked", "blocked"])
         self.assertFalse(result["completed"])

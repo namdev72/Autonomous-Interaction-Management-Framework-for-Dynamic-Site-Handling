@@ -74,8 +74,6 @@ planner = TaskPlanner()
 router = TaskRouter()
 
 async def _run_agent(session: AgentSession, query: str, plan: TaskPlan):
-    start_time = time.time()
-    
     async def on_event(event_type: str, data: dict):
         import datetime
         event_obj = {
@@ -89,42 +87,8 @@ async def _run_agent(session: AgentSession, query: str, plan: TaskPlan):
         else:
             print(f"[{event_type}] {data}")
 
-    # Calculate strategy and emit metrics
-    strategy = router.route_task(query, plan)
-    
-    url_generation_latency = int((time.time() - start_time) * 1000)
-    
-    if isinstance(strategy, DirectURLStrategy):
-        await on_event("strategy", {
-            "strategy": "direct_url",
-            "website": strategy.website,
-            "url_generated": True,
-            "browser_actions_saved": 4, # Approximate saved actions
-            "url_generation_latency_ms": url_generation_latency
-        })
-    elif isinstance(strategy, RegistryStrategy):
-        await on_event("strategy", {
-            "strategy": "registry",
-            "website": strategy.website
-        })
-    else:
-        await on_event("strategy", {
-            "strategy": "llm",
-            "website": "unknown"
-        })
-
-    enforce_hosts = getattr(strategy, "source_locked", False)
-    hosts = allowed_hosts() if enforce_hosts else None
-
-    # Built only for the reasoning path: it opens Chroma and SQLite
-    # connections that the comparison path never uses.
-    agent = ReasoningAgent(
-        headless=False,
-        max_iterations=20,
-        allowed_hosts=hosts,
-        on_event=on_event,
-    )
-    
+    # Everything below is inside the try so that any failure still reaches the
+    # finally, which closes the WebSocket; otherwise the UI waits forever.
     try:
         await on_event("agent_started", {"message": "Agent execution starting...", "plan": plan.model_dump()})
         if plan.task_type == "compare":
@@ -148,7 +112,41 @@ async def _run_agent(session: AgentSession, query: str, plan: TaskPlan):
                 "last_url": None,
             }})
             return
-            
+
+        # Routing and the agent are only for the reasoning path: the agent
+        # opens Chroma and SQLite connections that comparisons never use.
+        start_time = time.time()
+        strategy = router.route_task(query, plan)
+        url_generation_latency = int((time.time() - start_time) * 1000)
+
+        if isinstance(strategy, DirectURLStrategy):
+            await on_event("strategy", {
+                "strategy": "direct_url",
+                "website": strategy.website,
+                "url_generated": True,
+                "browser_actions_saved": 4, # Approximate saved actions
+                "url_generation_latency_ms": url_generation_latency
+            })
+        elif isinstance(strategy, RegistryStrategy):
+            await on_event("strategy", {
+                "strategy": "registry",
+                "website": strategy.website
+            })
+        else:
+            await on_event("strategy", {
+                "strategy": "llm",
+                "website": "unknown"
+            })
+
+        enforce_hosts = getattr(strategy, "source_locked", False)
+        hosts = allowed_hosts() if enforce_hosts else None
+
+        agent = ReasoningAgent(
+            headless=False,
+            max_iterations=20,
+            allowed_hosts=hosts,
+            on_event=on_event,
+        )
         result = await agent.execute_task(query, strategy=strategy)
         await on_event("agent_completed", {"result": result.model_dump()})
     except asyncio.CancelledError:
