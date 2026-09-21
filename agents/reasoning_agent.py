@@ -68,6 +68,7 @@ class ReasoningAgent:
         self.goal_compiler = GoalCompiler(self.llm_client)
         self.goal_verifier = GoalVerifier(self.llm_client)
         self.progress_tracker = ProgressTracker()
+        self._verification_cache = None
         self.step_verifier = StepVerifier()
         self.max_iterations = max_iterations
         self.on_event = on_event if on_event is not None else default_cli_printer
@@ -378,6 +379,24 @@ class ReasoningAgent:
             await self._emit_log(f"Extracted: {result.value}", "success")
             await self._emit("extraction", {"key": key, "value": result.value})
 
+    async def _verify_goal(self, contract: GoalContract, state: ObservedState):
+        """
+        Ask the goal verifier, unless it already judged this exact page state.
+
+        Verification is an LLM call on every iteration; re-asking about a page
+        that has not changed (a step that did nothing, or a "done" claim made
+        right after the iteration's own check) cannot give new information.
+        """
+        fingerprint = self.progress_tracker.fingerprint(state)
+        if self._verification_cache and self._verification_cache[0] == fingerprint:
+            await self._emit_log("Page unchanged since the last goal check; reusing its result.")
+            return self._verification_cache[1]
+        result = await self.goal_verifier.verify(contract, state)
+        # An empty LLM reply (e.g. rate limited) is not an answer; retry it next time.
+        if not (result.status == "UNKNOWN" and result.confidence == 0.0):
+            self._verification_cache = (fingerprint, result)
+        return result
+
     async def execute_task(self, user_query: str, strategy: Optional[Any] = None) -> AgentRunResult:
         logger.info(f"Starting agent task: {user_query}")
         await self._emit_log(f"Starting task: {user_query}")
@@ -385,6 +404,7 @@ class ReasoningAgent:
         last_action = None
         last_result = None
         iterations = 0
+        self._verification_cache = None
 
         try:
             if not self.llm_client.is_configured:
@@ -395,9 +415,7 @@ class ReasoningAgent:
             contract = await self.goal_compiler.compile(user_query)
             await self._emit_log(f"Goal Compiled: {contract.model_dump_json()}")
             
-            # Resolve URL using IntentParser if strategy didn't provide one
-            intent = await self.intent_parser.parse(user_query)
-            target_url = intent.website_url
+            target_url = None
             strategy_note = ""
 
             if strategy:
@@ -408,6 +426,12 @@ class ReasoningAgent:
                 elif getattr(strategy, "strategy_type", None) == "registry":
                     target_url = strategy.domain
                     await self._emit_log(f"Using Registry Fallback Strategy: {target_url}", "success")
+
+            # The intent parser only exists to find a starting URL, so it costs
+            # an LLM call only when the strategy did not already provide one.
+            if not target_url:
+                intent = await self.intent_parser.parse(user_query)
+                target_url = intent.website_url
 
             if not target_url:
                 import urllib.parse
@@ -444,7 +468,7 @@ class ReasoningAgent:
                 observed_state = await observer.observe()
 
                 # 2. VERIFY
-                verification = await self.goal_verifier.verify(contract, observed_state)
+                verification = await self._verify_goal(contract, observed_state)
                 
                 if verification.status == "ACHIEVED":
                     await self._emit_log("Goal verified as complete. Halting execution.", "success")
@@ -489,7 +513,7 @@ class ReasoningAgent:
                 # 6. IF PLANNER SAYS DONE, VERIFY IT INDEPENDENTLY
                 if decision.needs_verification:
                     final_state = await observer.observe()
-                    final_verification = await self.goal_verifier.verify(contract, final_state)
+                    final_verification = await self._verify_goal(contract, final_state)
                     if final_verification.status == "ACHIEVED":
                         await self._emit_log("Planner 'done' was verified.", "success")
                         return AgentRunResult(completed=True, iterations=iterations, reason="goal_achieved")

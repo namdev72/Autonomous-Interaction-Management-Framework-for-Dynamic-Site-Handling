@@ -7,6 +7,10 @@ class ProgressTracker:
         self.history = []
         self.MAX_NO_PROGRESS = 3
         
+    def fingerprint(self, state: ObservedState) -> str:
+        """Identity of the page state; equal fingerprints mean nothing changed."""
+        return self._hash_state(state)
+
     def _hash_state(self, state: ObservedState) -> str:
         selected_strs = [str(x) for x in state.selected_states]
         # Scroll position and input values are included because the page text

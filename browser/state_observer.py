@@ -30,8 +30,19 @@ class StateObserver:
                 const rawText = document.body.innerText || "";
                 const lines = rawText.split('\\n').map(l => l.trim()).filter(l => l.length > 2);
                 
-                // Keep the first 150 lines of meaningful text, which easily covers the main product info
-                const visibleText = [...new Set(lines)].slice(0, 150);
+                // Keep the first 150 lines of meaningful text, which easily covers the main product info.
+                // Also capped by length: this goes to the verifier LLM on every
+                // iteration, and a few very long lines can otherwise dominate it.
+                const visibleText = [];
+                let chars = 0;
+                for (const line of [...new Set(lines)].slice(0, 150)) {
+                    if (chars + line.length > 6000) {
+                        if (!visibleText.length) visibleText.push(line.slice(0, 6000));
+                        break;
+                    }
+                    visibleText.push(line);
+                    chars += line.length;
+                }
 
                 // Page text is the same whatever the scroll position, and typed
                 // input values are not part of it, so both are captured here:

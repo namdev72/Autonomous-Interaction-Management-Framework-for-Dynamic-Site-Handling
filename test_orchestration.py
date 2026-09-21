@@ -291,6 +291,11 @@ class FakeGoalCompiler:
             GoalRequirement(id="r", type="content", description=user_query)])
 
 
+class FailingIntentParser:
+    async def parse(self, user_query):
+        raise AssertionError("intent parser should not be called")
+
+
 def _test_agent(intent_parser, allowed_hosts=None):
     from agents.reasoning_agent import ReasoningAgent
 
@@ -319,6 +324,16 @@ class AgentStartTests(unittest.IsolatedAsyncioTestCase):
         agent.browser_controller.open_website = record_open
         return visited
 
+    async def test_direct_url_strategy_starts_there_without_parsing_intent(self):
+        from models.strategy_models import DirectURLStrategy
+        agent = _test_agent(FailingIntentParser(), allowed_hosts={"www.amazon.in"})
+        visited = self._record_navigation(agent)
+        strategy = DirectURLStrategy(url="https://www.amazon.in/s?k=iPhone%2016", website="amazon")
+
+        await agent.execute_task("search iPhone 16 on amazon india", strategy=strategy)
+
+        self.assertEqual(visited, ["https://www.amazon.in/s?k=iPhone%2016"])
+
     async def test_unapproved_named_site_stops_before_launching_a_browser(self):
         agent = _test_agent(FakeIntentParser("https://books.toscrape.com/"), allowed_hosts={"www.amazon.in"})
         visited = self._record_navigation(agent)
@@ -335,6 +350,71 @@ class AgentStartTests(unittest.IsolatedAsyncioTestCase):
         await agent.execute_task("find iphone 16")
 
         self.assertTrue(visited[0].startswith("https://duckduckgo.com/?q="))
+
+
+class FakeObserver:
+    """StateObserver stand-in returning a fixed sequence of page states."""
+    states = []
+
+    def __init__(self, page):
+        pass
+
+    async def observe(self):
+        return FakeObserver.states.pop(0)
+
+
+class CountingVerifier:
+    def __init__(self, statuses):
+        self.statuses = list(statuses)
+        self.calls = 0
+
+    async def verify(self, contract, state):
+        from models.goal_models import VerificationResult
+        self.calls += 1
+        return VerificationResult(status=self.statuses.pop(0), confidence=0.9)
+
+
+class GoalLoopTests(unittest.IsolatedAsyncioTestCase):
+    """One iteration of the goal loop where the planner claims "done"."""
+
+    async def _run(self, states, statuses):
+        from models.orchestration_models import AgentState, StepDecision
+
+        agent = _test_agent(FailingIntentParser())
+        agent.max_iterations = 1
+        agent.memory.extracted_data = {"Extraction_Iter_1": "₹69,900"}
+        agent.goal_verifier = CountingVerifier(statuses)
+
+        async def opened(url):
+            return True
+
+        async def build_state(*args):
+            return AgentState(user_query="q", iteration=1, current_url=states[0].url, page_context="", memory_context="")
+
+        async def decide(*args):
+            return StepDecision(action=AgentAction(action="done"), needs_verification=True)
+
+        async def act(*args):
+            return ActionResult(success=True, action="scroll")
+
+        agent.browser_controller.open_website = opened
+        agent._build_state = build_state
+        agent._decide_next_step = decide
+        agent._execute_with_recovery = act
+        FakeObserver.states = list(states)
+        from models.strategy_models import DirectURLStrategy
+        with patch("agents.reasoning_agent.StateObserver", FakeObserver):
+            result = await agent.execute_task("q", strategy=DirectURLStrategy(url="https://www.amazon.in/s?k=q"))
+        return result, agent.goal_verifier.calls
+
+    async def test_unchanged_page_is_not_verified_twice(self):
+        from models.goal_models import ObservedState
+        same = ObservedState(url="https://www.amazon.in/s?k=q", title="t")
+
+        result, calls = await self._run([same, same.model_copy()], ["NOT_ACHIEVED", "ACHIEVED"])
+
+        self.assertEqual(calls, 1)
+        self.assertFalse(result.completed)
 
 
 class RecoveryPolicyTests(unittest.TestCase):

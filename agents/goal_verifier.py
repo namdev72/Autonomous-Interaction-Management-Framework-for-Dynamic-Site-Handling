@@ -23,7 +23,8 @@ class GoalVerifier:
         NOT_ACHIEVED: The page definitively proves the goal is NOT met (e.g. wrong page, required text missing).
         UNKNOWN: Insufficient evidence to decide.
         """
-        user_prompt = f"Goal Contract:\n{contract.model_dump_json(indent=2)}\n\nCurrent State Evidence:\n{state.model_dump_json(indent=2)}"
+        # Compact JSON: indentation adds tokens on every call for no benefit to the model.
+        user_prompt = f"Goal Contract:\n{contract.model_dump_json()}\n\nCurrent State Evidence:\n{state.model_dump_json()}"
 
         response = await self.llm_client.generate_json(system_prompt, user_prompt)
         if not response:
