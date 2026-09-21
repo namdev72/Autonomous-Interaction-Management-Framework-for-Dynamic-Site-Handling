@@ -1,9 +1,13 @@
+import re
 from typing import Union
 from loguru import logger
 from models.task_models import TaskPlan
 from models.strategy_models import DirectURLStrategy, RegistryStrategy, LLMStrategy
 from router.query_normalizer import QueryNormalizer
 from sites.registry import classify_sites, policy_for
+
+# The user already said which kind of trip.
+TRIP_TYPE_GIVEN = re.compile(r"\b(?:round[\s-]?trip|return(?:ing)?|one[\s-]?way)\b", re.IGNORECASE)
 
 
 class TaskRouter:
@@ -34,6 +38,11 @@ class TaskRouter:
         logger.info(f"[Agent] Website detected: {policy.label}")
 
         search_query = self.normalizer.normalize_search_query(plan.subject, website_key)
+        # Google Flights defaults to a round trip with dates it picks, so "the
+        # cheapest flight" came back as a round-trip fare. Search one way unless
+        # the user said which kind of trip.
+        if search_query and "flight_search" in policy.capabilities and not TRIP_TYPE_GIVEN.search(user_query):
+            search_query = f"{search_query} one way"
 
         if plan.task_type in ["search", "compare"] and search_query:
             logger.info(f"[Agent] {plan.task_type.title()} intent detected for query: '{search_query}'")

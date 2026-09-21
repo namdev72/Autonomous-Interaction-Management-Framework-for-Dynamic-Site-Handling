@@ -21,6 +21,10 @@ class VerificationResult(BaseModel):
     requirements: List[GoalRequirement] = Field(default_factory=list)
     evidence: Dict[str, Any] = Field(default_factory=dict)
     confidence: float = 1.0
+    # For tasks that ask for information ("the cheapest flight"): the values
+    # that answer it, each copied from the page, so each can be checked
+    # against it. Empty for pure navigation.
+    answer_parts: List[str] = Field(default_factory=list)
 
 class ObservedState(BaseModel):
     url: str

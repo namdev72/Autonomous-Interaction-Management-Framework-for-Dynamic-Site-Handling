@@ -569,26 +569,27 @@ class FakeObserver:
 
 
 class CountingVerifier:
-    def __init__(self, statuses):
+    def __init__(self, statuses, answer_parts=()):
         self.statuses = list(statuses)
+        self.answer_parts = list(answer_parts)
         self.calls = 0
 
     async def verify(self, contract, state):
         from models.goal_models import VerificationResult
         self.calls += 1
-        return VerificationResult(status=self.statuses.pop(0), confidence=0.9)
+        return VerificationResult(status=self.statuses.pop(0), confidence=0.9, answer_parts=self.answer_parts)
 
 
 class GoalLoopTests(unittest.IsolatedAsyncioTestCase):
     """One iteration of the goal loop where the planner claims "done"."""
 
-    async def _run(self, states, statuses):
+    async def _run(self, states, statuses, answer_parts=(), extracted=None):
         from models.orchestration_models import AgentState, StepDecision
 
         agent = _test_agent(FailingIntentParser())
         agent.max_iterations = 1
-        agent.memory.extracted_data = {"Extraction_Iter_1": "₹69,900"}
-        agent.goal_verifier = CountingVerifier(statuses)
+        agent.memory.extracted_data = {"Extraction_Iter_1": "₹69,900"} if extracted is None else extracted
+        agent.goal_verifier = CountingVerifier(statuses, answer_parts)
 
         async def opened(url):
             return True
@@ -632,6 +633,53 @@ class GoalLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, 1)
         self.assertFalse(result.completed)
 
+    async def test_stuck_run_keeps_extracted_data(self):
+        from models.goal_models import ObservedState
+        from agents.progress_tracker import ProgressTracker
+        same = ObservedState(url="https://www.google.com/travel/flights", title="t")
+
+        class AlwaysStuck(ProgressTracker):
+            def is_stuck(self, state, extracted_values=()):
+                return True
+
+        with patch("agents.reasoning_agent.ProgressTracker", AlwaysStuck):
+            result, _ = await self._run([same], ["NOT_ACHIEVED"], extracted={"Extraction_Iter_1": "₹11,860"})
+
+        self.assertEqual(result.reason, "no_progress")
+        self.assertEqual(result.extracted_data, {"Extraction_Iter_1": "₹11,860"})
+        self.assertEqual(result.last_url, "https://www.google.com/travel/flights")
+
+    RESULTS_PAGE = dict(url="https://www.google.com/travel/flights", title="Delhi to Mumbai",
+                        visible_text=["One way", "Sep 22", "12:15 AM", "5:30 AM", "IndiGo", "1 stop", "₹5,985", "Air India", "₹6,249"])
+
+    async def test_goal_met_on_first_page_returns_the_verifiers_answer(self):
+        from models.goal_models import ObservedState
+        parts = ["IndiGo", "12:15 AM", "5:30 AM", "1 stop", "₹5,985", "One way", "Sep 22"]
+
+        result, _ = await self._run([ObservedState(**self.RESULTS_PAGE)], ["ACHIEVED"], answer_parts=parts, extracted={})
+
+        self.assertTrue(result.completed)
+        self.assertEqual(result.extracted_data, {"answer": "IndiGo · 12:15 AM · 5:30 AM · 1 stop · ₹5,985 · One way · Sep 22"})
+
+    async def test_answer_parts_not_on_the_page_are_dropped(self):
+        from models.goal_models import ObservedState
+        for parts in (["Vistara", "₹5,985"],             # wrong airline, real price
+                      ["IndiGo", "₹3,999"],              # real airline, invented price
+                      ["Cheapest: IndiGo at ₹5,985"]):   # model's own wording
+            with self.subTest(parts=parts):
+                result, _ = await self._run([ObservedState(**self.RESULTS_PAGE)], ["ACHIEVED"], answer_parts=parts, extracted={})
+
+                self.assertTrue(result.completed)
+                self.assertEqual(result.extracted_data, {})
+
+    async def test_answer_parts_match_despite_case_and_spacing(self):
+        from models.goal_models import ObservedState
+        page = dict(self.RESULTS_PAGE, visible_text=["Sep 24 – Oct 3", "Round trip"])
+
+        result, _ = await self._run([ObservedState(**page)], ["ACHIEVED"], answer_parts=["round trip", "Sep 24 – Oct 3"], extracted={})
+
+        self.assertEqual(result.extracted_data, {"answer": "round trip · Sep 24 – Oct 3"})
+
 
 class RecoveryPolicyTests(unittest.TestCase):
     def test_failed_locator_recovers_with_scroll(self):
@@ -648,6 +696,51 @@ class RecoveryPolicyTests(unittest.TestCase):
 
         self.assertEqual(action.action, "scroll")
         self.assertEqual(action.value, "down")
+
+
+class FakeLocator:
+    """One element: its visible text and attributes."""
+    def __init__(self, text="", **attributes):
+        self.text = text
+        self.attributes = {name.replace("_", "-"): value for name, value in attributes.items()}
+        self.first = self
+
+    async def count(self):
+        return 1
+
+    async def wait_for(self, **kwargs):
+        pass
+
+    async def text_content(self, timeout=None):
+        return self.text
+
+    async def get_attribute(self, name, timeout=None):
+        return self.attributes.get(name)
+
+
+class ExtractTests(unittest.IsolatedAsyncioTestCase):
+    async def _extract(self, element):
+        page = FakePage()
+        page.locator = lambda selector: element
+        return await BrowserExecutor(page).execute(AgentAction(action="extract", target="pw-id-1"))
+
+    async def test_visible_text_is_extracted(self):
+        result = await self._extract(FakeLocator("  ₹5,985 ", aria_label="ignored"))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.value, "₹5,985")
+
+    async def test_aria_label_is_used_when_there_is_no_visible_text(self):
+        result = await self._extract(FakeLocator("", aria_label="From 11860 Indian rupees round trip total"))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.value, "From 11860 Indian rupees round trip total")
+
+    async def test_element_without_any_text_fails_the_step(self):
+        result = await self._extract(FakeLocator("   "))
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.recovery_hint, "choose_element_with_text")
 
 
 class BrowserExecutorTests(unittest.IsolatedAsyncioTestCase):
@@ -685,6 +778,21 @@ class GoalVerifierTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.status, "ACHIEVED")
         self.assertEqual(result.confidence, 0.9)
+
+    async def test_verifier_returns_the_answer_it_read(self):
+        verifier = GoalVerifier(FakeLLMClient({"status": "ACHIEVED", "confidence": 0.9, "answer_parts": [" ₹69,900 ", "", 5]}))
+
+        result = await verifier.verify(*self._inputs())
+
+        self.assertEqual(result.answer_parts, ["₹69,900"])
+
+    async def test_verifier_missing_or_malformed_answer_is_empty(self):
+        for response in ({"status": "ACHIEVED"}, {"status": "ACHIEVED", "answer_parts": None},
+                         {"status": "ACHIEVED", "answer_parts": "₹69,900"}):
+            with self.subTest(response=response):
+                result = await GoalVerifier(FakeLLMClient(response)).verify(*self._inputs())
+
+                self.assertEqual(result.answer_parts, [])
 
     async def test_verifier_treats_empty_response_as_unknown(self):
         verifier = GoalVerifier(FakeLLMClient({}))
@@ -726,6 +834,24 @@ class ProgressTrackerTests(unittest.TestCase):
 
         self.assertEqual(stuck, [False, False, True])
 
+    def test_extracting_a_new_value_is_progress(self):
+        from agents.progress_tracker import ProgressTracker
+        tracker = ProgressTracker()
+
+        stuck = [tracker.is_stuck(self._state(), values) for values in (
+            [], ["₹11,860"], ["₹11,860", "IndiGo"])]
+
+        self.assertEqual(stuck, [False, False, False])
+
+    def test_extracting_the_same_value_again_is_not_progress(self):
+        from agents.progress_tracker import ProgressTracker
+        tracker = ProgressTracker()
+
+        stuck = [tracker.is_stuck(self._state(), values) for values in (
+            ["₹11,860"], ["₹11,860", "₹11,860"], ["₹11,860", "₹11,860", "₹11,860"])]
+
+        self.assertEqual(stuck, [False, False, True])
+
 
 class BrowserControllerTests(unittest.TestCase):
     def test_headless_setting_is_respected(self):
@@ -757,6 +883,26 @@ class SiteRegistryTests(unittest.TestCase):
 
         self.assertIsInstance(strategy, RegistryStrategy)
         self.assertEqual(strategy.domain, "https://www.google.com/travel/flights")
+
+    def test_flight_searches_are_one_way_unless_the_user_says_otherwise(self):
+        from router.task_router import TaskRouter
+        cases = (("search flights from Delhi to Mumbai on google flights", True),
+                 ("search round trip flights from Delhi to Mumbai on google flights", False),
+                 ("search flights from Delhi to Mumbai returning Oct 3 on google flights", False),
+                 ("search one-way flights from Delhi to Mumbai on google flights", False))
+        for query, adds_one_way in cases:
+            with self.subTest(query=query):
+                url = TaskRouter().route_task(query, TaskPlanner().plan(query)).url
+
+                self.assertEqual(url.endswith("%20one%20way"), adds_one_way)
+
+    def test_product_searches_are_not_changed(self):
+        from router.task_router import TaskRouter
+        query = "search one way street sign on amazon india"
+
+        url = TaskRouter().route_task(query, TaskPlanner().plan(query)).url
+
+        self.assertEqual(url, "https://www.amazon.in/s?k=one%20way%20street%20sign")
 
 
 class SignatureTests(unittest.TestCase):

@@ -38,6 +38,22 @@ class BrowserExecutor:
             metadata=metadata or {},
         )
 
+    @staticmethod
+    async def _element_text(locator) -> str:
+        """
+        Visible text, else the accessible label. Some sites put the value only
+        in aria-label (Google Flights: "From 11860 Indian rupees round trip
+        total"), so reading visible text alone returned an empty string.
+        """
+        text = (await locator.text_content(timeout=5000) or "").strip()
+        if text:
+            return text
+        for attribute in ("aria-label", "title", "value"):
+            label = (await locator.get_attribute(attribute, timeout=5000) or "").strip()
+            if label:
+                return label
+        return ""
+
     async def execute(self, action: AgentAction) -> ActionResult:
         """
         Executes an action mapped from the LLM's structured output.
@@ -141,8 +157,12 @@ class BrowserExecutor:
                 await locator.scroll_into_view_if_needed(timeout=5000)
                 
             elif action.action == "extract":
-                text = await locator.text_content(timeout=5000)
+                text = await self._element_text(locator)
                 logger.info(f"Extracted Text: {text}")
+                if not text:
+                    # An empty read is not a result; say so, so the planner
+                    # picks another element instead of repeating this one.
+                    return self._result(action, False, error="Element has no text to extract.", recovery_hint="choose_element_with_text", url_before=url_before)
                 return self._result(action, True, value=text, url_before=url_before)
 
             elif action.action == "hover":

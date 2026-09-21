@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import time
 import uuid
 from typing import Awaitable, Callable, Optional, Any
@@ -22,7 +23,7 @@ from memory.history import MemoryState, StepRecord
 from memory.signature import descriptor_for_target, page_key, target_for_descriptor, view_signature
 from models.action_models import AgentAction
 from models.orchestration_models import ActionResult, AgentRunResult, AgentState, StepDecision
-from models.goal_models import GoalContract, ObservedState
+from models.goal_models import GoalContract, ObservedState, VerificationResult
 
 
 async def default_cli_printer(event_type: str, data: dict):
@@ -397,6 +398,36 @@ class ReasoningAgent:
             self._verification_cache = (fingerprint, result)
         return result
 
+    def _data_for_achieved_goal(self, verification: VerificationResult, state: ObservedState) -> dict:
+        """
+        What to hand back once the goal is met.
+
+        A goal can be met on the first page, before the agent extracts
+        anything ("find the cheapest flight" lands on sorted results), which
+        left the UI with nothing to show. The verifier reads that page anyway,
+        so its answer is used when nothing was extracted.
+        """
+        data = dict(self.memory.extracted_data)
+        if "answer" not in data and verification.answer_parts:
+            if self._on_page(verification.answer_parts, state):
+                data["answer"] = " · ".join(verification.answer_parts)
+            else:
+                logger.warning(f"Dropped an answer not found on the page: {verification.answer_parts}")
+        return data
+
+    @staticmethod
+    def _on_page(parts: list[str], state: ObservedState) -> bool:
+        """
+        Every part must be text from one line of the page. The answer is built
+        only from these parts, so nothing the model wrote itself (a wrong
+        airline, an invented price) can reach the user.
+        """
+        def normalize(text: str) -> str:
+            return re.sub(r"\s+", " ", text).strip().casefold()
+
+        lines = [normalize(line) for line in (state.title, *state.headings, *state.visible_text, *state.relevant_content)]
+        return all(any(normalize(part) in line for line in lines) for part in parts)
+
     async def execute_task(self, user_query: str, strategy: Optional[Any] = None) -> AgentRunResult:
         logger.info(f"Starting agent task: {user_query}")
         await self._emit_log(f"Starting task: {user_query}")
@@ -476,7 +507,7 @@ class ReasoningAgent:
                         completed=True,
                         iterations=iterations,
                         reason="goal_achieved",
-                        extracted_data=self.memory.extracted_data,
+                        extracted_data=self._data_for_achieved_goal(verification, observed_state),
                         last_url=observed_state.url,
                     )
                     
@@ -489,9 +520,17 @@ class ReasoningAgent:
                     await self._emit_log(f"Goal verification is NOT_ACHIEVED. Continuing...")
 
                 # 3. DETECT STUCK STATE
-                if self.progress_tracker.is_stuck(observed_state):
+                if self.progress_tracker.is_stuck(observed_state, self.memory.extracted_data.values()):
                     await self._emit_log("Agent is stuck with no progress. Aborting.", "error")
-                    return AgentRunResult(completed=False, iterations=iterations, reason="no_progress")
+                    # Keep what was read before getting stuck, as the
+                    # max-iterations exit does.
+                    return AgentRunResult(
+                        completed=False,
+                        iterations=iterations,
+                        reason="no_progress",
+                        extracted_data=self.memory.extracted_data,
+                        last_url=observed_state.url,
+                    )
 
                 # 4. EXTRACT INTERACTIVE DOM & BUILD PLANNER STATE
                 state = await self._build_state(user_query, iterations, last_action, last_result)
@@ -520,7 +559,7 @@ class ReasoningAgent:
                             completed=True,
                             iterations=iterations,
                             reason="goal_achieved",
-                            extracted_data=self.memory.extracted_data,
+                            extracted_data=self._data_for_achieved_goal(final_verification, final_state),
                             last_url=final_state.url,
                         )
                     
