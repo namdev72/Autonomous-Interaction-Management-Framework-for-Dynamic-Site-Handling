@@ -23,7 +23,10 @@ CHALLENGE_JS = """
   return markers.some(marker => text.includes(marker));
 }
 """
-NON_PRODUCT_TERMS = ("case", "cover", "charger", "adapter", "screen protector", "stand", "cable")
+# Accessories that match a product search by name ("Screen Guard for iPhone
+# 16") and would otherwise win on price.
+NON_PRODUCT_TERMS = ("case", "cover", "charger", "adapter", "protector", "screen guard", "tempered glass",
+                     "stand", "cable", "skin", "sticker")
 
 
 def _number(text: str | None) -> float | None:
@@ -72,9 +75,21 @@ def _join_title(headings: List[str]) -> str:
     return " ".join(kept)
 
 
+def _is_accessory(title: str, subject: str) -> bool:
+    """
+    Whole words, so "standard" is not a stand and "discover" not a cover; and
+    a term the user searched for ("phone cases", "skin cream") is what they
+    want, not an accessory.
+    """
+    def has(text: str, term: str) -> bool:
+        return re.search(rf"\b{re.escape(term)}(?:e?s)?\b", text, re.IGNORECASE) is not None
+
+    return any(has(title, term) and not has(subject, term) for term in NON_PRODUCT_TERMS)
+
+
 def _is_candidate(title: str, subject: str) -> bool:
     """Drop accessories and unrelated results, so they cannot win on price."""
-    return not any(term in title.lower() for term in NON_PRODUCT_TERMS) and _relevant_title(title, subject)
+    return not _is_accessory(title, subject) and _relevant_title(title, subject)
 
 
 async def _amazon_offers(page, policy: SitePolicy, subject: str, limit: int = 10) -> List[ProductOffer]:

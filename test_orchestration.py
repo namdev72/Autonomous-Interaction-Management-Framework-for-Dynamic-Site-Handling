@@ -310,6 +310,31 @@ def _offer(title, price, availability=None, rating=None):
                         currency="INR", rating=rating, availability=availability, source_timestamp="now")
 
 
+class AccessoryFilterTests(unittest.TestCase):
+    def test_accessories_seen_live_are_dropped(self):
+        from sites.adapters import _is_candidate
+
+        for title, subject in (("GELTEC Screen Guard for iPhone 16", "iphone 16"),
+                               ("wrap craft GOOGLE PIXEL 10 5G Premium Vinyl BACK 80 Mobile Skin", "pixel 10"),
+                               ("Tempered Glass for Pixel 10", "pixel 10"),
+                               ("Apple 20W USB-C Power Adapter for iPhone 16", "iphone 16")):
+            with self.subTest(title=title):
+                self.assertFalse(_is_candidate(title, subject))
+
+    def test_words_that_only_contain_an_accessory_term_are_kept(self):
+        from sites.adapters import _is_candidate
+
+        self.assertTrue(_is_candidate("Samsung Galaxy S24 Standard Edition", "galaxy s24"))
+        self.assertTrue(_is_candidate("Discover Pixel 10 Pro", "pixel 10"))
+
+    def test_an_accessory_the_user_searched_for_is_kept(self):
+        from sites.adapters import _is_candidate
+
+        self.assertTrue(_is_candidate("Spigen Case for iPhone 16", "iphone 16 case"))
+        self.assertTrue(_is_candidate("Spigen Cases for iPhone 16", "iphone 16 cases"))
+        self.assertTrue(_is_candidate("Nivea Soft Skin Cream 200ml", "skin cream"))
+
+
 class RatingCountTests(unittest.IsolatedAsyncioTestCase):
     def test_amazon_count_is_read_from_the_exact_label(self):
         from sites.adapters import _rating_count
