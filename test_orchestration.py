@@ -434,6 +434,22 @@ class GoalLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, 1)
         self.assertFalse(result.completed)
 
+    async def test_stuck_run_keeps_extracted_data(self):
+        from models.goal_models import ObservedState
+        from agents.progress_tracker import ProgressTracker
+        same = ObservedState(url="https://www.google.com/travel/flights", title="t")
+
+        class AlwaysStuck(ProgressTracker):
+            def is_stuck(self, state, extracted_values=()):
+                return True
+
+        with patch("agents.reasoning_agent.ProgressTracker", AlwaysStuck):
+            result, _ = await self._run([same], ["NOT_ACHIEVED"], extracted={"Extraction_Iter_1": "₹11,860"})
+
+        self.assertEqual(result.reason, "no_progress")
+        self.assertEqual(result.extracted_data, {"Extraction_Iter_1": "₹11,860"})
+        self.assertEqual(result.last_url, "https://www.google.com/travel/flights")
+
     RESULTS_PAGE = dict(url="https://www.google.com/travel/flights", title="Delhi to Mumbai",
                         visible_text=["One way", "Sep 22", "12:15 AM", "5:30 AM", "IndiGo", "1 stop", "₹5,985", "Air India", "₹6,249"])
 

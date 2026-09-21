@@ -522,7 +522,15 @@ class ReasoningAgent:
                 # 3. DETECT STUCK STATE
                 if self.progress_tracker.is_stuck(observed_state, self.memory.extracted_data.values()):
                     await self._emit_log("Agent is stuck with no progress. Aborting.", "error")
-                    return AgentRunResult(completed=False, iterations=iterations, reason="no_progress")
+                    # Keep what was read before getting stuck, as the
+                    # max-iterations exit does.
+                    return AgentRunResult(
+                        completed=False,
+                        iterations=iterations,
+                        reason="no_progress",
+                        extracted_data=self.memory.extracted_data,
+                        last_url=observed_state.url,
+                    )
 
                 # 4. EXTRACT INTERACTIVE DOM & BUILD PLANNER STATE
                 state = await self._build_state(user_query, iterations, last_action, last_result)
