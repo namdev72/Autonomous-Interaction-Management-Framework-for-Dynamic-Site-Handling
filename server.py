@@ -4,9 +4,10 @@ import uuid
 from typing import Dict, Optional, Any
 
 if sys.platform == 'win32':
-    # Uvicorn's reload/accept loop is more reliable with Selector on Windows.
-    # Proactor can raise WinError 87 while registering the listening socket.
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    # Playwright launches a subprocess and requires Proactor on Windows.
+    # The entrypoint below disables reload because Uvicorn reload can conflict
+    # with Proactor socket registration on Windows.
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -107,7 +108,7 @@ async def _run_agent(session: AgentSession, query: str, plan: TaskPlan):
         await on_event("agent_stopped", {"message": "Agent execution was cancelled by user."})
     except Exception as e:
         logger.exception("Agent execution failed")
-        await on_event("error", {"message": str(e)})
+        await on_event("error", {"message": f"{type(e).__name__}: {e}"})
     finally:
         await session.queue.put(None)
 
@@ -202,4 +203,4 @@ async def agent_websocket(websocket: WebSocket, session_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=False)
