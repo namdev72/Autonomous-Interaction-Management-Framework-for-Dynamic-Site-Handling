@@ -18,8 +18,9 @@ class TaskPlanner:
         if is_flight and not sites:
             return TaskPlan(
                 task_type="book" if "book" in lowered else "search",
-                subject=text,
+                subject=self._subject(text, task_type),
                 candidate_sites=["google_flights"],
+                constraints=self._constraints(lowered),
                 clarification_question="Which approved flight website do you prefer?",
                 clarification_options=["Google Flights"],
             )
@@ -28,8 +29,9 @@ class TaskPlanner:
             if not any(token in lowered for token in ("india", ".in", "inr", "rupee", "us", ".com", "usd", "dollar")):
                 return TaskPlan(
                     task_type=task_type,
-                    subject=text,
+                    subject=self._subject(text, task_type),
                     candidate_sites=["amazon_in", "amazon_us"],
+                    constraints=self._constraints(lowered),
                     clarification_question="Which Amazon region should I use?",
                     clarification_options=["Amazon India (INR)", "Amazon US (USD)"],
                 )
@@ -41,7 +43,7 @@ class TaskPlanner:
         currency = policy_for(sites[0]).currency or None
         return TaskPlan(
             task_type=task_type,
-            subject=text,
+            subject=self._subject(text, task_type),
             preferred_sites=sites,
             candidate_sites=sites,
             country=country,
@@ -50,11 +52,26 @@ class TaskPlanner:
         )
 
     @staticmethod
+    def _subject(query: str, task_type: str) -> str:
+        """Reduce conversational wording to the product or route being searched."""
+        text = query.split("\nUser clarification:", 1)[0].strip()
+        text = re.sub(r"^open\s+(?:chrome|browser)\s+and\s+", "", text, flags=re.IGNORECASE)
+        if task_type == "compare":
+            match = re.search(r"compare\s+(.+?)(?:\s+prices?|\s+on\s+|\s+with\s+my\s+budget|$)", text, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        match = re.search(r"search\s+(?:for\s+)?(.+?)(?:\s+on\s+|$)", text, re.IGNORECASE)
+        return match.group(1).strip() if match else text
+
+    @staticmethod
     def _constraints(query: str) -> dict[str, str]:
         constraints = {}
         rating = re.search(r"(?:at least|minimum|min)\s*(\d(?:\.\d)?)\s*star", query)
         if rating:
             constraints["minimum_rating"] = rating.group(1)
+        budget = re.search(r"budget(?:\s+being|\s+is|\s+of|\s*=)?\s*(?:₹|rs\.?|inr)?\s*([\d,]+)", query)
+        if budget:
+            constraints["maximum_price"] = budget.group(1).replace(",", "")
         if "new" in query:
             constraints["condition"] = "new"
         return constraints

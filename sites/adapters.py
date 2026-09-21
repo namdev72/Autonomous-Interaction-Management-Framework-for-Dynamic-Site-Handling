@@ -89,7 +89,8 @@ async def search_site(policy: SitePolicy, task: TaskPlan) -> SiteRunResult:
             offers = await _flipkart_offers(controller.page, policy)
         else:
             offers = []
-        return SiteRunResult(site=policy.key, status="completed", offers=offers)
+        warnings = [] if offers else ["No public product cards were found; the site layout or access state may need review."]
+        return SiteRunResult(site=policy.key, status="completed", offers=offers, warnings=warnings)
     except Exception as exc:
         return SiteRunResult(site=policy.key, status="failed", warnings=[str(exc)])
     finally:

@@ -24,14 +24,20 @@ export function ActivityEventDisplay({ event }: { event: AgentEvent }) {
           bg: 'bg-blue-900/10 border-blue-900/50',
           text: `Action: ${data?.action?.toUpperCase()} on ${data?.target || 'page'} -> ${data?.reasoning || ''}`
         };
-      case 'agent_started':
-      case 'agent_completed':
       case 'extraction':
         return {
           icon: <Check className="w-4 h-4 text-green-400 mt-1" />,
           color: 'text-green-200',
           bg: 'bg-green-900/10 border-green-900/50',
           text: data?.message || `Extracted: ${data?.value}`
+        };
+      case 'agent_started':
+      case 'agent_completed':
+        return {
+          icon: <Check className="w-4 h-4 text-green-400 mt-1" />,
+          color: 'text-green-200',
+          bg: 'bg-green-900/10 border-green-900/50',
+          text: data?.message || (data?.result?.extracted_data?.answer ? data.result.extracted_data.answer : 'Agent execution completed.'),
         };
       case 'error':
         return {

@@ -93,6 +93,12 @@ class TaskPlannerTests(unittest.TestCase):
         self.assertEqual(plan.preferred_sites, ["amazon_in", "flipkart_in"])
         self.assertEqual(plan.constraints["minimum_rating"], "4.5")
 
+    def test_comparison_extracts_product_and_budget(self):
+        plan = self.planner.plan("Open chrome and compare Galaxy S6 pro prices on Amazon with my budget being 40000")
+
+        self.assertEqual(plan.subject, "Galaxy S6 pro")
+        self.assertEqual(plan.constraints["maximum_price"], "40000")
+
 
 class ComparisonAnswerTests(unittest.TestCase):
     def test_answer_ranks_matching_offers_by_price(self):
@@ -120,6 +126,22 @@ class ComparisonAnswerTests(unittest.TestCase):
 
         self.assertIn("Lowest matching price: INR 64,999.00", answer["answer"])
         self.assertEqual(answer["offers"][0]["price"], 64999)
+
+    def test_budget_is_applied_to_ranking(self):
+        plan = TaskPlanner().plan("compare iphone 16 prices on amazon india with my budget being 70000")
+        from models.task_models import ProductOffer, SiteRunResult
+        result = SiteRunResult(
+            site="amazon_in",
+            status="completed",
+            offers=[
+                ProductOffer(site="amazon_in", title="Over budget", product_url="https://example/1", price=80000, currency="INR", source_timestamp="now"),
+                ProductOffer(site="amazon_in", title="Within budget", product_url="https://example/2", price=65000, currency="INR", source_timestamp="now"),
+            ],
+        )
+
+        answer = compose_comparison_answer(plan, [result])
+
+        self.assertEqual(answer["offers"][0]["title"], "Within budget")
 
 
 class RecoveryPolicyTests(unittest.TestCase):
