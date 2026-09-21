@@ -20,7 +20,7 @@ from agents.answer_composer import compose_comparison_answer
 from agents.task_planner import TaskPlanner
 from models.task_models import TaskPlan
 from sites.adapters import compare_sites
-from sites.registry import allowed_hosts
+from sites.registry import allowed_hosts, policy_for
 
 # Configure loguru for FastAPI
 logger.remove()
@@ -113,7 +113,12 @@ async def _run_agent(session: AgentSession, query: str, plan: TaskPlan):
             allowed_hosts=allowed_hosts(),
             on_event=on_event,
         )
-        result = await agent.execute_task(query)
+        # The whitelist blocks the agent's default web-search fallback, so a
+        # query that names no site starts at the planner's approved site.
+        fallback_url = None
+        if plan.candidate_sites:
+            fallback_url = policy_for(plan.candidate_sites[0]).build_search_url(plan.subject)
+        result = await agent.execute_task(query, fallback_url=fallback_url)
         await on_event("agent_completed", {"result": result.model_dump()})
     except asyncio.CancelledError:
         await on_event("agent_stopped", {"message": "Agent execution was cancelled by user."})

@@ -371,7 +371,12 @@ class ReasoningAgent:
             await self._emit_log(f"Extracted: {result.value}", "success")
             await self._emit("extraction", {"key": key, "value": result.value})
 
-    async def execute_task(self, user_query: str) -> AgentRunResult:
+    async def execute_task(self, user_query: str, fallback_url: Optional[str] = None) -> AgentRunResult:
+        """
+        fallback_url is where to start when the query names no website. Callers
+        that restrict navigation pass an approved URL, since the default web
+        search would itself be blocked.
+        """
         logger.info(f"Starting agent task: {user_query}")
         await self._emit_log(f"Starting task: {user_query}")
 
@@ -387,12 +392,25 @@ class ReasoningAgent:
             intent = await self.intent_parser.parse(user_query)
             await self._emit_log(f"Parsed Intent: {intent.model_dump_json()}")
 
-            if not intent.website_url:
+            if not intent.website_url and fallback_url:
+                intent.website_url = fallback_url
+                await self._emit_log(f"No website named; starting at approved site: {fallback_url}", "warning")
+            elif not intent.website_url:
                 import urllib.parse
 
                 query_encoded = urllib.parse.quote(user_query)
                 intent.website_url = f"https://duckduckgo.com/?q={query_encoded}"
                 await self._emit_log(f"Falling back to web search for: {user_query}", "warning")
+
+            # Checked before launching a browser, so a site the user named but
+            # that is not approved gets a clear answer rather than a generic
+            # navigation failure.
+            if not self.browser_controller.is_allowed_url(intent.website_url):
+                approved = ", ".join(sorted(self.browser_controller.allowed_hosts or []))
+                await self._emit_log(
+                    f"{intent.website_url} is not an approved site. Approved sites: {approved}.", "error"
+                )
+                return AgentRunResult(completed=False, iterations=0, reason="site_not_approved")
 
             await self._emit_log(f"Launching browser and navigating to {intent.website_url}...")
             success = await self.browser_controller.open_website(intent.website_url)

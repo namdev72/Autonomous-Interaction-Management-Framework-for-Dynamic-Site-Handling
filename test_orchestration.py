@@ -271,6 +271,55 @@ class ComparisonRunStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["reason"], "sites_blocked")
 
 
+class FakeIntentParser:
+    def __init__(self, website_url):
+        self.website_url = website_url
+
+    async def parse(self, user_query):
+        from llm.intent_parser import ParsedIntent
+        return ParsedIntent(website_url=self.website_url, intent="search")
+
+
+class ConfiguredLLM:
+    is_configured = True
+
+
+class WhitelistedStartTests(unittest.IsolatedAsyncioTestCase):
+    async def _agent(self, website_url):
+        from agents.reasoning_agent import ReasoningAgent
+
+        async def ignore(event_type, data):
+            pass
+
+        with patch("agents.reasoning_agent.MemoryState"):
+            agent = ReasoningAgent(allowed_hosts={"www.amazon.in"}, on_event=ignore)
+        agent.llm_client = ConfiguredLLM()
+        agent.intent_parser = FakeIntentParser(website_url)
+        visited = []
+
+        async def record_open(url):
+            visited.append(url)
+            return False
+
+        agent.browser_controller.open_website = record_open
+        return agent, visited
+
+    async def test_unapproved_named_site_stops_before_launching_a_browser(self):
+        agent, visited = await self._agent("https://books.toscrape.com/")
+
+        result = await agent.execute_task("go to books.toscrape.com", fallback_url="https://www.amazon.in/s?k=x")
+
+        self.assertEqual(result.reason, "site_not_approved")
+        self.assertEqual(visited, [])
+
+    async def test_query_without_a_site_starts_at_the_fallback(self):
+        agent, visited = await self._agent(None)
+
+        await agent.execute_task("find iphone 16", fallback_url="https://www.amazon.in/s?k=iphone+16")
+
+        self.assertEqual(visited, ["https://www.amazon.in/s?k=iphone+16"])
+
+
 class RecoveryPolicyTests(unittest.TestCase):
     def test_failed_locator_recovers_with_scroll(self):
         policy = RecoveryPolicy()
