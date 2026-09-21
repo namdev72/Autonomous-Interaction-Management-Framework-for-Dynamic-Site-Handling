@@ -25,6 +25,8 @@ class VerificationResult(BaseModel):
     # that answer it, each copied from the page, so each can be checked
     # against it. Empty for pure navigation.
     answer_parts: List[str] = Field(default_factory=list)
+    # When not achieved: what still has to happen on the page, for the planner.
+    missing: Optional[str] = None
 
 class ObservedState(BaseModel):
     url: str

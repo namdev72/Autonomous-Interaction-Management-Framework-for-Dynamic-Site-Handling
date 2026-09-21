@@ -687,6 +687,67 @@ class CountingVerifier:
         return VerificationResult(status=self.statuses.pop(0), confidence=0.9, answer_parts=self.answer_parts)
 
 
+class GoalFeedbackTests(unittest.IsolatedAsyncioTestCase):
+    """The planner is told what the goal check says is missing."""
+
+    MISSING = "Select the 'Cheapest' tab; 'Best' is selected."
+
+    async def test_rejected_done_reaches_the_planner_with_the_reason(self):
+        from models.goal_models import ObservedState, VerificationResult
+        from models.orchestration_models import AgentState, StepDecision
+        from models.strategy_models import DirectURLStrategy
+
+        agent = _test_agent(FailingIntentParser())
+        agent.max_iterations = 2
+        page = ObservedState(url="https://www.google.com/travel/flights", title="Flights")
+
+        class Verifier:
+            async def verify(self, contract, state):
+                return VerificationResult(status="NOT_ACHIEVED", confidence=0.9, missing=GoalFeedbackTests.MISSING)
+
+        planned, acted = [], []
+
+        async def opened(url):
+            return True
+
+        async def build_state(query, iteration, last_action, last_result):
+            return AgentState(user_query=query, iteration=iteration, current_url=page.url, page_context="",
+                              memory_context="", last_action=last_action, last_result=last_result)
+
+        async def decide(state, note):
+            planned.append(state)
+            action = "done" if len(planned) == 1 else "click"
+            return StepDecision(action=AgentAction(action=action, target="pw-id-7"), needs_verification=action == "done")
+
+        async def act(executor, action, state):
+            acted.append(action.action)
+            return ActionResult(success=True, action=action.action)
+
+        agent.goal_verifier = Verifier()
+        agent.browser_controller.open_website = opened
+        agent._build_state = build_state
+        agent._decide_next_step = decide
+        agent._execute_with_recovery = act
+        FakeObserver.states = [page.model_copy() for _ in range(4)]
+        with patch("agents.reasoning_agent.StateObserver", FakeObserver):
+            await agent.execute_task("cheapest round trip", strategy=DirectURLStrategy(url=page.url))
+
+        self.assertEqual(planned[0].goal_feedback, self.MISSING)
+        self.assertEqual(acted, ["click"])  # no forced scroll after the rejected done
+        self.assertFalse(planned[1].last_result.success)
+        self.assertIn(self.MISSING, planned[1].last_result.error)
+        self.assertIn(f"Still missing: {self.MISSING}", agent._agent_user_prompt(planned[1]))
+
+    async def test_verifier_reports_what_is_missing_only_when_not_achieved(self):
+        contract, state = GoalVerifierTests._inputs(None)
+
+        rejected = await GoalVerifier(FakeLLMClient({"status": "NOT_ACHIEVED", "missing": f" {self.MISSING} "})).verify(contract, state)
+        accepted = await GoalVerifier(FakeLLMClient({"status": "ACHIEVED", "missing": "anything"})).verify(contract, state)
+
+        self.assertEqual(rejected.missing, self.MISSING)
+        self.assertIsNone(accepted.missing)
+
+
 class GoalLoopTests(unittest.IsolatedAsyncioTestCase):
     """One iteration of the goal loop where the planner claims "done"."""
 
@@ -778,6 +839,17 @@ class GoalLoopTests(unittest.IsolatedAsyncioTestCase):
 
                 self.assertTrue(result.completed)
                 self.assertEqual(result.extracted_data, {})
+
+    async def test_answer_parts_can_come_from_form_fields_and_selections(self):
+        from models.goal_models import ObservedState
+        page = dict(self.RESULTS_PAGE, visible_text=["IndiGo", "₹11,860"],
+                    forms=[{"field": "Departure", "value": "Thu, Sep 24"}],
+                    selected_states=[{"text": "Round trip"}])
+
+        result, _ = await self._run([ObservedState(**page)], ["ACHIEVED"],
+                                    answer_parts=["IndiGo", "₹11,860", "Round trip", "Sep 24"], extracted={})
+
+        self.assertEqual(result.extracted_data, {"answer": "IndiGo · ₹11,860 · Round trip · Sep 24"})
 
     async def test_answer_parts_match_despite_case_and_spacing(self):
         from models.goal_models import ObservedState

@@ -39,6 +39,8 @@ class AgentState(BaseModel):
     semantic_memory: List[str] = Field(default_factory=list)
     last_action: Optional[AgentAction] = None
     last_result: Optional[ActionResult] = None
+    # What the goal verifier says is still missing on this page, if anything.
+    goal_feedback: Optional[str] = None
 
 
 class StepDecision(BaseModel):
