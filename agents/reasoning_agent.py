@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+import shutil
 import time
 import uuid
 from typing import Awaitable, Callable, Optional, Any
@@ -24,6 +25,36 @@ from memory.signature import descriptor_for_target, page_key, target_for_descrip
 from models.action_models import AgentAction
 from models.orchestration_models import ActionResult, AgentRunResult, AgentState, StepDecision
 from models.goal_models import GoalContract, ObservedState, VerificationResult
+
+
+SCREENSHOT_DIR = "screenshots"
+
+
+def prune_screenshots(root: str = SCREENSHOT_DIR, keep: Optional[int] = None) -> int:
+    """
+    Keep the screenshots of the most recent runs only (MAX_SCREENSHOT_RUNS,
+    default 20); every step saves one, so without this they pile up forever.
+    Returns how many entries were removed.
+    """
+    keep = int(os.getenv("MAX_SCREENSHOT_RUNS", "20")) if keep is None else keep
+    if not os.path.isdir(root):
+        return 0
+    # Run folders and loose screenshots from before folders; never other files
+    # (the folder's README).
+    entries = [os.path.join(root, name) for name in os.listdir(root)]
+    entries = [path for path in entries if os.path.isdir(path) or path.lower().endswith(".png")]
+    entries.sort(key=os.path.getmtime, reverse=True)
+    removed = 0
+    for path in entries[keep:]:
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+            removed += 1
+        except OSError as e:
+            logger.warning(f"Could not remove old screenshot {path}: {e}")
+    return removed
 
 
 async def default_cli_printer(event_type: str, data: dict):
@@ -70,6 +101,7 @@ class ReasoningAgent:
         self.goal_verifier = GoalVerifier(self.llm_client)
         self.progress_tracker = ProgressTracker()
         self._verification_cache = None
+        self._screenshot_count = 0
         self.step_verifier = StepVerifier()
         self.max_iterations = max_iterations
         self.on_event = on_event if on_event is not None else default_cli_printer
@@ -84,8 +116,12 @@ class ReasoningAgent:
     async def _emit_screenshot(self, name_prefix: str = "screenshot") -> Optional[str]:
         try:
             if self.browser_controller.page:
-                os.makedirs("screenshots", exist_ok=True)
-                filename = f"screenshots/{name_prefix}_{int(time.time())}.png"
+                # One folder per run, numbered, so a run's screenshots stay
+                # together and two in the same second do not overwrite each other.
+                run_dir = os.path.join(SCREENSHOT_DIR, self.memory.run_id)
+                os.makedirs(run_dir, exist_ok=True)
+                self._screenshot_count += 1
+                filename = os.path.join(run_dir, f"{self._screenshot_count:03d}_{name_prefix}.png")
                 await self.browser_controller.page.screenshot(path=filename, full_page=False)
                 return filename
         except Exception as e:
@@ -136,7 +172,7 @@ class ReasoningAgent:
 
     def _agent_user_prompt(self, state: AgentState) -> str:
         # Recall goes first: it is the most actionable thing the model is given.
-        recalled = f"\n\n{state.recalled_context}" if state.recalled_context else ""
+        recalled = f"\n\n{state.recalled_context}\n\n" if state.recalled_context else ""
         semantic = "\n\nRelevant Semantic Memory:\n" + "\n---\n".join(state.semantic_memory) if state.semantic_memory else ""
         result = ""
         if state.last_result:
@@ -153,7 +189,7 @@ class ReasoningAgent:
         # The verifier judges "done", so the planner is told what it said is
         # still missing; otherwise it keeps claiming done on the same page.
         feedback = f"\n\nGoal check: not achieved yet. Still missing: {state.goal_feedback}" if state.goal_feedback else ""
-        return f"{state.memory_context}{recalled}{semantic}{result}{feedback}\n\nCurrent Page Context:\n{state.page_context}"
+        return f"{recalled}{state.memory_context}{semantic}{result}{feedback}\n\nCurrent Page Context:\n{state.page_context}"
 
     async def _build_state(
         self,
@@ -475,6 +511,7 @@ class ReasoningAgent:
     async def execute_task(self, user_query: str, strategy: Optional[Any] = None) -> AgentRunResult:
         logger.info(f"Starting agent task: {user_query}")
         await self._emit_log(f"Starting task: {user_query}")
+        prune_screenshots()
 
         last_action = None
         last_result = None
@@ -652,3 +689,4 @@ class ReasoningAgent:
             else:
                 await self._emit_log("Task execution finished.")
             await self.browser_controller.close_browser()
+            self.memory.close()

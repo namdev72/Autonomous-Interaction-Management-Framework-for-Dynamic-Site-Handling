@@ -8,6 +8,11 @@ export interface AgentEvent {
   data: any;
 }
 
+// Backend address. Set VITE_API_URL (e.g. in frontend/.env) to run the UI
+// against a backend other than this machine's.
+const API_URL = (import.meta.env.VITE_API_URL ?? 'http://localhost:8000').replace(/\/$/, '');
+const WS_URL = API_URL.replace(/^http/, 'ws');
+
 export function useAgent() {
   const [status, setStatus] = useState<AgentStatus>('IDLE');
   const [events, setEvents] = useState<AgentEvent[]>([]);
@@ -24,7 +29,7 @@ export function useAgent() {
       setClarification(null);
 
       // Start the task on the backend
-      const res = await fetch('http://localhost:8000/api/agent/run', {
+      const res = await fetch(`${API_URL}/api/agent/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query }),
@@ -36,7 +41,7 @@ export function useAgent() {
       sessionIdRef.current = session_id;
 
       // Connect WebSocket
-      const ws = new WebSocket(`ws://localhost:8000/api/agent/ws/${session_id}`);
+      const ws = new WebSocket(`${WS_URL}/api/agent/ws/${session_id}`);
       wsRef.current = ws;
 
       ws.onmessage = (event) => {
@@ -84,7 +89,7 @@ export function useAgent() {
     setClarification(null);
     setStatus('RUNNING');
     try {
-      const res = await fetch(`http://localhost:8000/api/agent/respond/${sessionIdRef.current}`, {
+      const res = await fetch(`${API_URL}/api/agent/respond/${sessionIdRef.current}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ answer }),
@@ -102,7 +107,7 @@ export function useAgent() {
   const stopAgent = useCallback(async () => {
     if (sessionIdRef.current) {
       try {
-        await fetch(`http://localhost:8000/api/agent/stop/${sessionIdRef.current}`, {
+        await fetch(`${API_URL}/api/agent/stop/${sessionIdRef.current}`, {
           method: 'POST',
         });
         setStatus('STOPPED');

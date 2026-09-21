@@ -128,4 +128,5 @@ memory_db/
 # Artifacts/Screenshots
 screenshot.png
 final_state_*.png
-screenshots/*.png
+screenshots/*
+!screenshots/README.md
