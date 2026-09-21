@@ -310,6 +310,55 @@ def _offer(title, price, availability=None, rating=None):
                         currency="INR", rating=rating, availability=availability, source_timestamp="now")
 
 
+class RatingCountTests(unittest.IsolatedAsyncioTestCase):
+    def test_amazon_count_is_read_from_the_exact_label(self):
+        from sites.adapters import _rating_count
+
+        self.assertEqual(_rating_count("2,701 ratings"), 2701)
+        self.assertEqual(_rating_count("1 rating"), 1)
+        self.assertIsNone(_rating_count("4.5 out of 5 stars, rating details"))
+        self.assertIsNone(_rating_count(None))
+
+    def test_flipkart_count_is_read_from_both_layouts(self):
+        from sites.adapters import _flipkart_rating_count
+
+        # Lines of live cards: the score runs into the count in both layouts.
+        self.assertEqual(_flipkart_rating_count(["Coming Soon", "4.61,98,941 Ratings & 8,603 Reviews"], "4.6"), 198941)
+        self.assertEqual(_flipkart_rating_count(["Blue, Matte Finish", "4.2(9,003)", "₹170₹99982% off"], "4.2"), 9003)
+        self.assertEqual(_flipkart_rating_count(["4(324)"], "4"), 324)
+        # A whole-number score is not read as part of the count.
+        self.assertEqual(_flipkart_rating_count(["512 Ratings & 3 Reviews"], "5"), 12)
+        self.assertEqual(_flipkart_rating_count(["1,234 Ratings & 56 Reviews"], None), 1234)
+
+    def test_card_without_ratings_has_no_count(self):
+        from sites.adapters import _flipkart_rating_count
+
+        self.assertIsNone(_flipkart_rating_count(["BRUTON", "Trendy Sports Running Shoes For Men", "₹298₹1,29977% off"], None))
+
+    async def test_flipkart_offer_carries_the_count(self):
+        from sites.adapters import _flipkart_offers
+        from sites.registry import policy_for
+
+        page = FakeFlipkartPage([
+            {"href": "/apple-iphone-16/p/itm1", "title": "Apple iPhone 16 (Black, 128 GB)", "price": "₹69,900",
+             "rating": "4.6", "lines": ["Bestseller", "4.61,98,941 Ratings & 8,603 Reviews"]},
+        ])
+
+        offers = await _flipkart_offers(page, policy_for("flipkart_in"), "iPhone 16")
+
+        self.assertEqual(offers[0].review_count, 198941)
+
+    def test_answer_shows_the_count_next_to_the_rating(self):
+        from models.task_models import ProductOffer, SiteRunResult
+        plan = TaskPlanner().plan("compare iphone 16 on flipkart")
+        offer = ProductOffer(site="flipkart_in", title="Apple iPhone 16", product_url="https://example/1", price=69900,
+                             currency="INR", rating=4.6, review_count=198941, source_timestamp="now")
+
+        answer = compose_comparison_answer(plan, [SiteRunResult(site="flipkart_in", status="completed", offers=[offer])])
+
+        self.assertIn("rating 4.6/5 (198,941 ratings)", answer["answer"])
+
+
 class AvailabilityTests(unittest.IsolatedAsyncioTestCase):
     def test_status_label_is_read_from_real_card_lines(self):
         from sites.adapters import _status_label

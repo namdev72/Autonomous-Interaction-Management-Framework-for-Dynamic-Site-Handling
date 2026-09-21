@@ -40,6 +40,9 @@ class ProductOffer(BaseModel):
     price: Optional[float] = None
     currency: Optional[str] = None
     rating: Optional[float] = None
+    # How many ratings the score is based on (Amazon's "2,701 ratings",
+    # Flipkart's "1,98,941 Ratings"), so a 5.0 from 3 people is not read like
+    # a 4.5 from thousands.
     review_count: Optional[int] = None
     # The site's own status label when it shows one, e.g. "Coming Soon";
     # None when the card states nothing.

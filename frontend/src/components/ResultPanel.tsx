@@ -40,7 +40,12 @@ export function ResultPanel({ result }: { result: any }) {
                           )}
                         </td>
                         <td className="py-2 pr-3 whitespace-nowrap">{offer.currency} {offer.price?.toLocaleString()}</td>
-                        <td className="py-2">{offer.rating ?? 'N/A'}</td>
+                        <td className="py-2">
+                          {offer.rating ?? 'N/A'}
+                          {offer.rating != null && offer.review_count != null && (
+                            <span className="text-slate-500"> ({offer.review_count.toLocaleString()})</span>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

@@ -36,7 +36,8 @@ def compose_comparison_answer(task: TaskPlan, results: list[SiteRunResult]) -> d
     else:
         lines = [f"Found {len(ranked)} public offer(s) for {task.subject}:"]
         for index, offer in enumerate(ranked[:10], 1):
-            rating = f", rating {offer.rating}/5" if offer.rating is not None else ""
+            count = f" ({offer.review_count:,} ratings)" if offer.review_count is not None else ""
+            rating = f", rating {offer.rating}/5{count}" if offer.rating is not None else ""
             lines.append(f"{index}. {offer.site}: {offer.title} - {offer.currency} {offer.price:,.2f}{rating}")
         lines.append(f"Lowest matching price: {ranked[0].currency} {ranked[0].price:,.2f} on {ranked[0].site}.")
         answer = "\n".join(lines)
