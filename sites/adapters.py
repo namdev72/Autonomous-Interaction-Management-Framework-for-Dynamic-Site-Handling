@@ -40,12 +40,36 @@ def _rating(text: str | None) -> float | None:
     return float(match.group(1)) if match else None
 
 
+def _tokens(text: str) -> List[str]:
+    # Decimals stay whole, so "16.63 cm" is one token and never reads as "16".
+    return re.findall(r"[a-z0-9]+(?:\.\d+)?", text.lower())
+
+
 def _relevant_title(title: str, subject: str) -> bool:
-    tokens = [token for token in re.findall(r"[a-z0-9]+", subject.lower()) if len(token) > 1]
+    tokens = [token for token in _tokens(subject) if len(token) > 1]
     if not tokens:
         return True
-    matches = sum(token in title.lower() for token in tokens)
-    return matches >= min(2, len(tokens))
+    title_lower = title.lower()
+    title_tokens = set(_tokens(title))
+
+    def found(token: str) -> bool:
+        # A token with a digit is a model identifier ("16", "s6") and must
+        # match a whole title token: "16" is not in "16e" or "16.63". Words
+        # match loosely, so "shoe" still finds "shoes".
+        if any(char.isdigit() for char in token):
+            return token in title_tokens
+        return token in title_lower
+
+    return sum(found(token) for token in tokens) >= min(2, len(tokens))
+
+
+def _join_title(headings: List[str]) -> str:
+    """Amazon splits a card's title into a brand heading and a product heading."""
+    parts = [heading.strip() for heading in headings if heading.strip()]
+    # Drop a heading the next one already starts with ("Apple", "Apple iPhone").
+    kept = [part for i, part in enumerate(parts)
+            if not any(later.lower().startswith(part.lower()) for later in parts[i + 1:])]
+    return " ".join(kept)
 
 
 def _is_candidate(title: str, subject: str) -> bool:
@@ -61,8 +85,9 @@ async def _amazon_offers(page, policy: SitePolicy, subject: str, limit: int = 10
         title_links = card.locator('a[href*="/dp/"], a[href*="/gp/product/"]')
         if await title_links.count() == 0:
             continue
-        title_locator = card.locator("h2").first
-        title = (await title_locator.text_content() or "").strip()
+        # The first heading is often just the brand ("Apple"), so a title read
+        # from it alone fails the relevance check for every such card.
+        title = _join_title(await card.locator("h2").all_text_contents())
         if not _is_candidate(title, subject):
             continue
         href = await title_links.first.get_attribute("href", timeout=3000)

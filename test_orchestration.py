@@ -272,6 +272,38 @@ class FlipkartOfferTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(offers[0].product_url, "https://flipkart.com/apple-iphone-16-black-128-gb/p/itmb07?pid=MOB1")
 
 
+class AmazonTitleTests(unittest.TestCase):
+    # Headings and titles below are from live amazon.in results for "iPhone 16".
+
+    def test_brand_heading_is_joined_to_the_product_heading(self):
+        from sites.adapters import _join_title
+
+        self.assertEqual(_join_title(["Google", "Pixel 10 5G (Obsidian, 12GB RAM, 256GB Storage)"]),
+                         "Google Pixel 10 5G (Obsidian, 12GB RAM, 256GB Storage)")
+        self.assertEqual(_join_title(["iPhone 16 128 GB: 5G Mobile Phone"]), "iPhone 16 128 GB: 5G Mobile Phone")
+        self.assertEqual(_join_title(["Apple", "Apple iPhone 16"]), "Apple iPhone 16")
+
+    def test_joined_title_passes_relevance_that_the_brand_alone_failed(self):
+        from sites.adapters import _is_candidate
+
+        self.assertFalse(_is_candidate("Google", "Pixel 10"))
+        self.assertTrue(_is_candidate("Google Pixel 10 5G (Obsidian, 12GB RAM, 256GB Storage)", "Pixel 10"))
+
+    def test_model_numbers_must_match_whole(self):
+        from sites.adapters import _relevant_title
+
+        air = "Apple iPhone Air 256 GB: Thinnest iPhone Ever, 16.63 cm (6.5″) Display with Promotion"
+        self.assertFalse(_relevant_title(air, "iPhone 16"))
+        self.assertFalse(_relevant_title("Apple iPhone 17 256 GB: 15.93 cm (6.3″) Display", "iPhone 16"))
+        self.assertTrue(_relevant_title("iPhone 16 128 GB: 5G Mobile Phone with Camera Control", "iPhone 16"))
+        self.assertTrue(_relevant_title("Samsung Galaxy S6 Edge (Gold, 32 GB)", "Galaxy S6 pro"))
+
+    def test_words_still_match_loosely(self):
+        from sites.adapters import _relevant_title
+
+        self.assertTrue(_relevant_title("Trendy Sports Running Shoes For Men", "running shoe"))
+
+
 def _offer(title, price, availability=None, rating=None):
     from models.task_models import ProductOffer
     return ProductOffer(site="flipkart_in", title=title, product_url=f"https://example/{title}", price=price,
