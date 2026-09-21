@@ -4,7 +4,9 @@ import uuid
 from typing import Dict, Optional, Any
 
 if sys.platform == 'win32':
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    # Uvicorn's reload/accept loop is more reliable with Selector on Windows.
+    # Proactor can raise WinError 87 while registering the listening socket.
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -200,4 +202,4 @@ async def agent_websocket(websocket: WebSocket, session_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True, loop="none")
+    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
