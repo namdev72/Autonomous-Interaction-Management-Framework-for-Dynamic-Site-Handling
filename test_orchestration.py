@@ -499,6 +499,51 @@ class RecoveryPolicyTests(unittest.TestCase):
         self.assertEqual(action.value, "down")
 
 
+class FakeLocator:
+    """One element: its visible text and attributes."""
+    def __init__(self, text="", **attributes):
+        self.text = text
+        self.attributes = {name.replace("_", "-"): value for name, value in attributes.items()}
+        self.first = self
+
+    async def count(self):
+        return 1
+
+    async def wait_for(self, **kwargs):
+        pass
+
+    async def text_content(self, timeout=None):
+        return self.text
+
+    async def get_attribute(self, name, timeout=None):
+        return self.attributes.get(name)
+
+
+class ExtractTests(unittest.IsolatedAsyncioTestCase):
+    async def _extract(self, element):
+        page = FakePage()
+        page.locator = lambda selector: element
+        return await BrowserExecutor(page).execute(AgentAction(action="extract", target="pw-id-1"))
+
+    async def test_visible_text_is_extracted(self):
+        result = await self._extract(FakeLocator("  ₹5,985 ", aria_label="ignored"))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.value, "₹5,985")
+
+    async def test_aria_label_is_used_when_there_is_no_visible_text(self):
+        result = await self._extract(FakeLocator("", aria_label="From 11860 Indian rupees round trip total"))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.value, "From 11860 Indian rupees round trip total")
+
+    async def test_element_without_any_text_fails_the_step(self):
+        result = await self._extract(FakeLocator("   "))
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.recovery_hint, "choose_element_with_text")
+
+
 class BrowserExecutorTests(unittest.IsolatedAsyncioTestCase):
     async def test_page_level_scroll_returns_structured_result(self):
         page = FakePage()
