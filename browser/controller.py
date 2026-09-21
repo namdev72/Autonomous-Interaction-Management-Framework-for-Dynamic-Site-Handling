@@ -43,6 +43,7 @@ class BrowserController:
         if self.allowed_hosts is not None:
             await self._block_off_site_navigation()
         self.page = await self.context.new_page()
+        await self.page.bring_to_front()
         logger.info("Browser launched and ready. Multi-tab behavior disabled.")
 
     async def _block_off_site_navigation(self):

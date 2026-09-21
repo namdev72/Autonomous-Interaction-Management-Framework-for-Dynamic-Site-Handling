@@ -10,7 +10,7 @@ class QueryNormalizer:
         text = query.strip()
         
         # Remove conversational prefixes
-        text = re.sub(r"^(?:search\s+(?:for\s+)?|find\s+(?:the\s+)?|show\s+(?:me\s+)?|looking\s+(?:for\s+)?)", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"^(?:search\s+(?:for\s+)?|find\s+(?:the\s+)?|show\s+(?:me\s+)?|looking\s+(?:for\s+)?|open\s+(?:chrome\s+and\s+|browser\s+and\s+)?|go\s+to\s+)", "", text, flags=re.IGNORECASE)
         
         # Remove trailing on website
         website_pattern = re.compile(rf"\s+on\s+{re.escape(website)}(?:\s+india|\s+us)?$", re.IGNORECASE)
