@@ -23,7 +23,10 @@ CHALLENGE_JS = """
   return markers.some(marker => text.includes(marker));
 }
 """
-NON_PRODUCT_TERMS = ("case", "cover", "charger", "adapter", "screen protector", "stand", "cable")
+# Accessories that match a product search by name ("Screen Guard for iPhone
+# 16") and would otherwise win on price.
+NON_PRODUCT_TERMS = ("case", "cover", "charger", "adapter", "protector", "screen guard", "tempered glass",
+                     "stand", "cable", "skin", "sticker")
 
 
 def _number(text: str | None) -> float | None:
@@ -72,9 +75,21 @@ def _join_title(headings: List[str]) -> str:
     return " ".join(kept)
 
 
+def _is_accessory(title: str, subject: str) -> bool:
+    """
+    Whole words, so "standard" is not a stand and "discover" not a cover; and
+    a term the user searched for ("phone cases", "skin cream") is what they
+    want, not an accessory.
+    """
+    def has(text: str, term: str) -> bool:
+        return re.search(rf"\b{re.escape(term)}(?:e?s)?\b", text, re.IGNORECASE) is not None
+
+    return any(has(title, term) and not has(subject, term) for term in NON_PRODUCT_TERMS)
+
+
 def _is_candidate(title: str, subject: str) -> bool:
     """Drop accessories and unrelated results, so they cannot win on price."""
-    return not any(term in title.lower() for term in NON_PRODUCT_TERMS) and _relevant_title(title, subject)
+    return not _is_accessory(title, subject) and _relevant_title(title, subject)
 
 
 async def _amazon_offers(page, policy: SitePolicy, subject: str, limit: int = 10) -> List[ProductOffer]:
@@ -95,6 +110,9 @@ async def _amazon_offers(page, policy: SitePolicy, subject: str, limit: int = 10
         price = await price_locator.first.text_content(timeout=3000) if await price_locator.count() else None
         rating_locator = card.locator('[aria-label*="out of 5 stars"]')
         rating = await rating_locator.first.get_attribute("aria-label", timeout=3000) if await rating_locator.count() else None
+        # The visible count is rounded ("2.7K"); the link's label is exact.
+        count_locator = card.locator('a[href*="customerReviews"][aria-label]')
+        rating_count = await count_locator.first.get_attribute("aria-label", timeout=3000) if await count_locator.count() else None
         if title and href:
             offers.append(ProductOffer(
                 site=policy.key,
@@ -103,6 +121,7 @@ async def _amazon_offers(page, policy: SitePolicy, subject: str, limit: int = 10
                 price=_number(price),
                 currency=policy.currency,
                 rating=_rating(rating),
+                review_count=_rating_count(rating_count),
                 source_timestamp=datetime.now(timezone.utc).isoformat(),
             ))
     return offers
@@ -134,6 +153,29 @@ FLIPKART_CARDS_JS = r"""
 """
 
 
+def _rating_count(text: str | None) -> int | None:
+    """Ratings behind a score, from Amazon's "2,701 ratings" label."""
+    match = re.fullmatch(r"\s*([\d,]+)\s+ratings?\s*", text or "", re.IGNORECASE)
+    return int(match.group(1).replace(",", "")) if match else None
+
+
+def _flipkart_rating_count(lines: List[str], rating: str | None) -> int | None:
+    """
+    Ratings behind a Flipkart score. List cards (phones) show
+    "1,98,941 Ratings & 8,603 Reviews" and grid cards (accessories) show
+    "(9,003)", but the card text runs the score into both: "4.61,98,941
+    Ratings", "4.2(9,003)". The score is known, so it is removed first;
+    guessing where it ends fails for a whole-number score ("512 Ratings").
+    """
+    for line in lines:
+        if rating and line.startswith(rating):
+            line = line[len(rating):]
+        match = re.match(r"\s*([\d,]+)\s+Ratings\b", line, re.IGNORECASE) or re.fullmatch(r"\s*\(([\d,]+)\)", line)
+        if match:
+            return int(match.group(1).replace(",", ""))
+    return None
+
+
 def _status_label(lines: List[str]) -> str | None:
     """The card's not-purchasable label, if it shows one."""
     return next((line for line in lines if line.lower() in UNAVAILABLE_STATUSES), None)
@@ -156,6 +198,7 @@ async def _flipkart_offers(page, policy: SitePolicy, subject: str, limit: int = 
             price=_number(card["price"]),
             currency=policy.currency,
             rating=float(card["rating"]) if card["rating"] else None,
+            review_count=_flipkart_rating_count(card.get("lines", []), card["rating"]),
             availability=_status_label(card.get("lines", [])),
             source_timestamp=datetime.now(timezone.utc).isoformat(),
         ))
