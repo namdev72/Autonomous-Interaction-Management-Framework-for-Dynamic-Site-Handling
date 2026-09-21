@@ -1566,6 +1566,47 @@ class RecallResolutionTests(unittest.TestCase):
         self.assertIsNone(target_for_descriptor(descriptor, elements))
 
 
+class SemanticRecallTests(unittest.TestCase):
+    """Earlier pages of this run only: not the current page, not other runs."""
+
+    def setUp(self):
+        self._dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self._dir, ignore_errors=True)
+
+    def test_recall_skips_the_current_page_and_other_runs(self):
+        old = MemoryState(persist_dir=self._dir, run_id="yesterday")
+        old.index_page_content("https://www.google.com/travel/flights?q=a", "old flights page pw-id-9 [DIV] 'Round trip'", "old")
+        current = MemoryState(persist_dir=self._dir, run_id="today")
+        current.index_page_content("https://www.google.com/travel/flights?q=b", "results page pw-id-3 [DIV] 'Cheapest'", "results")
+        current.index_page_content("https://www.google.com/travel/flights/booking", "booking page for the flight", "booking")
+
+        recalled = current.semantic_search("cheapest flight", n_results=2, exclude_key="booking")
+
+        self.assertEqual(recalled, ["results page pw-id-3 [DIV] 'Cheapest'"])
+
+    def test_recalled_pages_are_capped(self):
+        memory = MemoryState(persist_dir=self._dir, run_id="run")
+        memory.index_page_content("https://example.test/a", "x" * 10000, "a")
+
+        self.assertEqual(len(memory.semantic_search("x", max_chars=1500)[0]), 1500)
+
+
+class VisionFallbackTests(unittest.TestCase):
+    def test_vision_is_not_offered_without_a_vision_model(self):
+        agent = _test_agent(FailingIntentParser())
+        agent.llm_client.vision_model_name = None
+
+        self.assertNotIn("fallback_to_vision", agent._agent_system_prompt("q"))
+
+    def test_vision_is_offered_when_a_model_is_configured(self):
+        agent = _test_agent(FailingIntentParser())
+        agent.llm_client.vision_model_name = "some-vision-model"
+
+        self.assertIn("fallback_to_vision", agent._agent_system_prompt("q"))
+
+
 class MemoryRecallContextTests(unittest.TestCase):
     def setUp(self):
         self.builder = ContextBuilder()
