@@ -15,6 +15,8 @@ class TaskPlan(BaseModel):
     constraints: Dict[str, str] = Field(default_factory=dict)
     clarification_question: Optional[str] = None
     clarification_options: List[str] = Field(default_factory=list)
+    # Which planner produced this: the LLM, or the rule-based fallback.
+    planner: Literal["rules", "llm"] = "rules"
 
     @property
     def needs_clarification(self) -> bool:
