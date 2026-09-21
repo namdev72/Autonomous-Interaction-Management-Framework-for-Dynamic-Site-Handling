@@ -29,7 +29,7 @@ class TaskPlanner:
         if is_flight and not sites:
             return TaskPlan(
                 task_type="book" if is_booking else "search",
-                subject=self._subject(text, task_type),
+                subject=self._subject(text, task_type, sites),
                 candidate_sites=["google_flights"],
                 constraints=self._constraints(lowered),
                 clarification_question="Which approved flight website do you prefer?",
@@ -43,7 +43,7 @@ class TaskPlanner:
             elif region is None:
                 return TaskPlan(
                     task_type=task_type,
-                    subject=self._subject(text, task_type),
+                    subject=self._subject(text, task_type, sites),
                     candidate_sites=["amazon_in", "amazon_us"],
                     constraints=self._constraints(lowered),
                     clarification_question="Which Amazon region should I use?",
@@ -63,7 +63,7 @@ class TaskPlanner:
         currency = policy_for(sites[0]).currency or None
         return TaskPlan(
             task_type=task_type,
-            subject=self._subject(text, task_type),
+            subject=self._subject(text, task_type, sites),
             preferred_sites=sites,
             candidate_sites=sites,
             country=country,
@@ -86,7 +86,7 @@ class TaskPlanner:
         return "amazon_in" if says_india else "amazon_us"
 
     @staticmethod
-    def _subject(query: str, task_type: str) -> str:
+    def _subject(query: str, task_type: str, sites: Optional[list[str]] = None) -> str:
         """Reduce conversational wording to the product or route being searched."""
         text = query.split("\nUser clarification:", 1)[0].strip()
         text = re.sub(r"^open\s+(?:chrome|browser)\s+and\s+", "", text, flags=re.IGNORECASE)
@@ -95,7 +95,14 @@ class TaskPlanner:
             if match:
                 return match.group(1).strip()
         match = re.search(r"search\s+(?:for\s+)?(.+?)(?:\s+on\s+|$)", text, re.IGNORECASE)
-        return match.group(1).strip() if match else text
+        subject = match.group(1).strip() if match else text
+
+        # A query can name Amazon both as a routing hint and as the
+        # destination, e.g. "search for amazon galaxy note 7 on amazon".
+        # The routing hint must not become part of the product query.
+        if sites and any(site.startswith("amazon_") for site in sites):
+            subject = re.sub(r"^amazon\s+", "", subject, count=1, flags=re.IGNORECASE)
+        return subject.strip()
 
     @staticmethod
     def _constraints(query: str) -> dict[str, str]:

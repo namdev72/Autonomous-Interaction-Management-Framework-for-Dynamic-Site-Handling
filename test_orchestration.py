@@ -13,6 +13,7 @@ from llm.llm_client import DEFAULT_MODEL, LLMClient
 from memory.graph import NavigationGraph
 from memory.history import MemoryState
 from agents.task_planner import TaskPlanner
+from sites.registry import policy_for
 from memory.signature import (
     descriptor_for_target, element_descriptor, normalize_url, page_key,
     target_for_descriptor, view_signature,
@@ -98,6 +99,19 @@ class TaskPlannerTests(unittest.TestCase):
 
         self.assertEqual(plan.subject, "Galaxy S6 pro")
         self.assertEqual(plan.constraints["maximum_price"], "40000")
+
+    def test_repeated_amazon_routing_hint_is_not_part_of_product_query(self):
+        plan = self.planner.plan(
+            "search for amazon galaxy note 7 on amazon",
+            "Amazon India (INR)",
+        )
+
+        self.assertFalse(plan.needs_clarification)
+        self.assertEqual(plan.subject, "galaxy note 7")
+        self.assertEqual(
+            policy_for(plan.preferred_sites[0]).build_search_url(plan.subject),
+            "https://www.amazon.in/s?k=galaxy%20note%207",
+        )
 
     def test_words_containing_us_do_not_skip_region_question(self):
         for query in ("search wireless mouse on amazon", "compare business laptops on amazon", "help us find a kettle on amazon"):
