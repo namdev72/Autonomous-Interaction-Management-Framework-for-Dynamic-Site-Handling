@@ -380,6 +380,24 @@ class ReasoningAgent:
             await self._emit_log(f"Extracted: {result.value}", "success")
             await self._emit("extraction", {"key": key, "value": result.value})
 
+    async def _report_blocked_navigation(self, result: ActionResult) -> ActionResult:
+        """
+        A click that would have left the approved sites is stopped by the
+        browser and the page stays put. Say so, rather than letting the
+        planner see a click that silently did nothing and try it again.
+        """
+        blocked = self.browser_controller.blocked_navigations
+        if not blocked:
+            return result
+        await self._emit_log(f"Blocked a page load off the approved sites: {', '.join(blocked)}", "warning")
+        result = result.model_copy(update={
+            "success": False,
+            "error": f"That led off the approved sites ({blocked[-1]}) and was blocked. Stay on this site.",
+            "recovery_hint": "choose_approved_site",
+        })
+        blocked.clear()
+        return result
+
     async def _verify_goal(self, contract: GoalContract, state: ObservedState):
         """
         Ask the goal verifier, unless it already judged this exact page state.
@@ -488,6 +506,7 @@ class ReasoningAgent:
 
             await self.browser_controller.wait_for_load()
             executor = BrowserExecutor(self.browser_controller.page, self.browser_controller.allowed_hosts)
+            self.browser_controller.blocked_navigations.clear()
 
             # THE GOLDEN LOOP
             for iterations in range(1, self.max_iterations + 1):
@@ -568,6 +587,7 @@ class ReasoningAgent:
 
                 # 7. ACT
                 last_result = await self._execute_with_recovery(executor, action, state)
+                last_result = await self._report_blocked_navigation(last_result)
                 
                 # 8. RECORD
                 self.memory.add_result(last_result)

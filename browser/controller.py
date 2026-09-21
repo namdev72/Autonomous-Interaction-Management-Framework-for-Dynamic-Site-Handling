@@ -1,4 +1,5 @@
 import asyncio
+import re
 from urllib.parse import urlsplit
 from playwright.async_api import async_playwright, Browser, Page, BrowserContext
 from loguru import logger
@@ -14,6 +15,8 @@ class BrowserController:
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
+        # Off-site page loads stopped by the whitelist since the last check.
+        self.blocked_navigations: list[str] = []
 
     async def launch_browser(self):
         logger.info("Launching browser...")
@@ -37,8 +40,43 @@ class BrowserController:
                 }
             }, true);
         """)
+        if self.allowed_hosts is not None:
+            await self._block_off_site_navigation()
         self.page = await self.context.new_page()
         logger.info("Browser launched and ready. Multi-tab behavior disabled.")
+
+    async def _block_off_site_navigation(self):
+        """
+        is_allowed_url checks the URLs the agent opens itself, but a click, a
+        redirect or a popup can still take the page to another site. Abort any
+        top-level page load to a host that is not approved.
+
+        Images, scripts and iframes (CDNs, embedded widgets) still load: only
+        top-level page loads are checked. Requests to approved hosts never
+        reach Python, which keeps the cost off normal page loads.
+        """
+        hosts = "|".join(re.escape(host) for host in sorted(self.allowed_hosts))
+        off_site = re.compile(rf"^(?!https?://(?:{hosts})(?::\d+)?(?:[/?#]|$))")
+
+        async def guard(route, request):
+            if not request.is_navigation_request():
+                await route.continue_()
+                return
+            try:
+                top_level = request.frame.parent_frame is None
+            except Exception:
+                # A popup's first load starts before its frame exists.
+                top_level = True
+            if top_level:
+                logger.warning(f"Blocked navigation off the approved sites: {request.url}")
+                self.blocked_navigations.append(request.url)
+                # 204 cancels the navigation and leaves the current page as it
+                # is; aborting would replace it with the browser's error page.
+                await route.fulfill(status=204)
+            else:
+                await route.continue_()
+
+        await self.context.route(off_site, guard)
 
     async def open_website(self, url: str) -> bool:
         if not self.page:

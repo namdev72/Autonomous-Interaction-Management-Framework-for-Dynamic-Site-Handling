@@ -861,6 +861,72 @@ class BrowserControllerTests(unittest.TestCase):
         self.assertFalse(BrowserController().headless)
 
 
+class OffSiteNavigationTests(unittest.IsolatedAsyncioTestCase):
+    """Runs a real headless Chromium against fake sites served by routes; no network."""
+
+    PAGE = """<a id=off href="https://evil.test/phish">off</a> <a id=on href="https://shop.test/p/2">on</a>
+              <img src="https://cdn.other.test/x.png">
+              <button id=popup onclick="window.open('https://evil.test/popup')">popup</button>
+              <button id=script onclick="location.href='https://evil.test/redirect'">script</button>"""
+
+    async def asyncSetUp(self):
+        from browser.controller import BrowserController
+        self.controller = BrowserController(headless=True, allowed_hosts={"shop.test"})
+        await self.controller.launch_browser()
+        self.loaded = []
+
+        async def serve(route):
+            self.loaded.append(route.request.url)
+            body = self.PAGE if route.request.url.endswith("/1") else "<h1>page 2</h1>"
+            await route.fulfill(status=200, content_type="text/html", body=body)
+
+        await self.controller.context.route("https://shop.test/**", serve)
+        await self.controller.context.route("https://cdn.other.test/**", serve)
+        self.assertTrue(await self.controller.open_website("https://shop.test/p/1"))
+
+    async def asyncTearDown(self):
+        await self.controller.close_browser()
+
+    async def _click(self, selector):
+        await self.controller.page.click(selector)
+        await self.controller.page.wait_for_timeout(300)
+
+    async def test_off_site_link_script_and_popup_are_blocked_and_the_page_stays(self):
+        for selector in ("#off", "#script", "#popup"):
+            await self._click(selector)
+
+        self.assertEqual(self.controller.page.url, "https://shop.test/p/1")
+        self.assertEqual(self.controller.blocked_navigations,
+                         ["https://evil.test/phish", "https://evil.test/redirect", "https://evil.test/popup"])
+        self.assertEqual([page.url for page in self.controller.context.pages], ["https://shop.test/p/1"])
+
+    async def test_approved_links_and_off_site_images_still_load(self):
+        await self._click("#on")
+
+        self.assertEqual(self.controller.page.url, "https://shop.test/p/2")
+        self.assertIn("https://cdn.other.test/x.png", self.loaded)
+        self.assertEqual(self.controller.blocked_navigations, [])
+
+
+class BlockedNavigationReportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_blocked_click_is_reported_as_a_failed_step(self):
+        agent = _test_agent(FailingIntentParser())
+        agent.browser_controller.blocked_navigations.append("https://evil.test/phish")
+
+        result = await agent._report_blocked_navigation(ActionResult(success=True, action="click", target="pw-id-3"))
+
+        self.assertFalse(result.success)
+        self.assertIn("https://evil.test/phish", result.error)
+        self.assertEqual(result.recovery_hint, "choose_approved_site")
+        self.assertEqual(agent.browser_controller.blocked_navigations, [])
+
+    async def test_normal_step_is_unchanged(self):
+        agent = _test_agent(FailingIntentParser())
+        step = ActionResult(success=True, action="click", target="pw-id-3")
+
+        self.assertIs(await agent._report_blocked_navigation(step), step)
+
+
 class SiteRegistryTests(unittest.TestCase):
     def test_search_urls_come_from_the_registry_templates(self):
         from sites.registry import policy_for
