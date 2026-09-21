@@ -64,6 +64,112 @@ class LLMClientConfigurationTests(unittest.TestCase):
         self.assertIsNone(client.vision_model_name)
 
 
+class FakeRateLimitError(Exception):
+    status_code = 429
+
+    def __init__(self, message, retry_after=None):
+        super().__init__(message)
+        self.response = type("Response", (), {"headers": {"retry-after": retry_after} if retry_after else {}})()
+
+
+class FakeGroq:
+    """AsyncOpenAI stand-in: each key raises its queued errors, then answers."""
+    errors = {}
+    calls = []
+
+    def __init__(self, api_key, base_url):
+        self.chat = type("Chat", (), {})()
+        self.chat.completions = type("Completions", (), {})()
+
+        async def create(**kwargs):
+            FakeGroq.calls.append(api_key)
+            queued = FakeGroq.errors.get(api_key, [])
+            if queued:
+                raise queued.pop(0)
+            return f"response from {api_key}"
+
+        self.chat.completions.create = create
+
+
+class RateLimitTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        from llm import llm_client
+        llm_client.KEY_COOLDOWNS.clear()
+        FakeGroq.errors, FakeGroq.calls = {}, []
+        self.slept = []
+
+    def _client(self, **keys):
+        from llm.llm_client import LLMClient
+
+        with patch.dict("os.environ", keys, clear=True), patch("llm.llm_client.AsyncOpenAI", FakeGroq):
+            return LLMClient()
+
+    async def _call(self, client):
+        async def sleep(seconds):
+            self.slept.append(seconds)
+
+        with patch("llm.llm_client.AsyncOpenAI", FakeGroq), patch("llm.llm_client.asyncio.sleep", sleep):
+            return await client._chat_completion_with_retry(model="m")
+
+    def test_wait_is_read_from_header_or_message(self):
+        from llm.llm_client import rate_limit_wait
+
+        self.assertEqual(rate_limit_wait(FakeRateLimitError("x", retry_after="7")), 7.5)
+        self.assertEqual(rate_limit_wait(FakeRateLimitError("Please try again in 7.66s. Need more tokens?")), 8.16)
+        self.assertEqual(rate_limit_wait(FakeRateLimitError("Please try again in 1m2.5s.")), 63.0)
+        self.assertIsNone(rate_limit_wait(ValueError("not a rate limit")))
+
+    def test_keys_are_read_in_order(self):
+        from llm.llm_client import configured_api_keys
+
+        env = {"GROQ_API_KEY_3": "c", "GROQ_API_KEY": "a", "GROQ_API_KEY_2": "b", "GROQ_API_KEY_X": "no", "OTHER": "no"}
+        with patch.dict("os.environ", env, clear=True):
+            self.assertEqual(configured_api_keys(), ["a", "b", "c"])
+
+    async def test_rate_limited_key_switches_to_the_next_without_waiting(self):
+        client = self._client(GROQ_API_KEY="a", GROQ_API_KEY_2="b")
+        FakeGroq.errors = {"a": [FakeRateLimitError("Please try again in 13m2s.")]}
+
+        self.assertEqual(await self._call(client), "response from b")
+        self.assertEqual(FakeGroq.calls, ["a", "b"])
+        self.assertEqual(self.slept, [])
+
+    async def test_new_client_starts_on_a_key_that_is_not_limited(self):
+        first = self._client(GROQ_API_KEY="a", GROQ_API_KEY_2="b")
+        FakeGroq.errors = {"a": [FakeRateLimitError("Please try again in 13m2s.")]}
+        await self._call(first)
+
+        second = self._client(GROQ_API_KEY="a", GROQ_API_KEY_2="b")
+
+        self.assertEqual(await self._call(second), "response from b")
+        self.assertEqual(FakeGroq.calls, ["a", "b", "b"])
+
+    async def test_when_every_key_is_limited_it_waits_for_the_soonest(self):
+        client = self._client(GROQ_API_KEY="a", GROQ_API_KEY_2="b")
+        FakeGroq.errors = {"a": [FakeRateLimitError("try again in 40s")], "b": [FakeRateLimitError("try again in 20s")]}
+
+        self.assertEqual(await self._call(client), "response from b")
+        self.assertEqual(FakeGroq.calls, ["a", "b", "b"])
+        self.assertEqual(len(self.slept), 1)
+        self.assertAlmostEqual(self.slept[0], 20.5, delta=1)
+
+    async def test_single_key_waits_out_a_per_minute_limit(self):
+        client = self._client(GROQ_API_KEY="a")
+        FakeGroq.errors = {"a": [FakeRateLimitError("try again in 20s")] * 3}
+
+        self.assertEqual(await self._call(client), "response from a")
+        self.assertEqual(len(FakeGroq.calls), 4)  # more than the 3 normal retries
+        self.assertEqual(len(self.slept), 3)
+
+    async def test_daily_limit_on_every_key_is_not_waited_for(self):
+        client = self._client(GROQ_API_KEY="a")
+        FakeGroq.errors = {"a": [FakeRateLimitError("Please try again in 2h13m5s.")]}
+
+        with self.assertRaises(FakeRateLimitError):
+            await self._call(client)
+        self.assertEqual(self.slept, [])
+
+
 class TaskPlannerTests(unittest.TestCase):
     def setUp(self):
         self.planner = TaskPlanner()

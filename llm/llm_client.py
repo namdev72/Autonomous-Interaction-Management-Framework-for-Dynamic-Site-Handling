@@ -2,6 +2,8 @@ import base64
 import asyncio
 import json
 import os
+import re
+import time
 from pathlib import Path
 
 from loguru import logger
@@ -15,11 +17,54 @@ DEFAULT_MODEL = "qwen/qwen3.8-27b"
 RETIRED_MODEL_REPLACEMENTS = {
     "llama-3.3-70b-versatile": DEFAULT_MODEL,
 }
+# Per-minute limits reset within a minute; a daily limit does not, so waiting
+# for it would only hang the run.
+MAX_RATE_LIMIT_WAIT = 65
+MAX_RATE_LIMIT_RETRIES = 4
+
+
+def rate_limit_wait(error: Exception):
+    """Seconds until a 429 rate limit resets, or None if this is not one."""
+    if getattr(error, "status_code", None) != 429:
+        return None
+    headers = getattr(getattr(error, "response", None), "headers", None) or {}
+    try:
+        return float(headers.get("retry-after")) + 0.5
+    except (TypeError, ValueError):
+        pass
+    # Groq also says it in the message: "Please try again in 1m2.5s" / "in 7.66s".
+    match = re.search(r"try again in (?:(\d+)h)?(?:(\d+)m)?(?:([\d.]+)s)?", str(error))
+    if match and any(match.groups()):
+        hours, minutes, seconds = (float(group or 0) for group in match.groups())
+        return hours * 3600 + minutes * 60 + seconds + 0.5
+    return 10.0
+
+
+def configured_api_keys() -> list[str]:
+    """GROQ_API_KEY, then GROQ_API_KEY_2, GROQ_API_KEY_3, ... in that order."""
+    def order(name: str) -> int:
+        suffix = name.rsplit("_", 1)[-1]
+        return int(suffix) if suffix.isdigit() else 1
+
+    names = sorted((name for name in os.environ if re.fullmatch(r"GROQ_API_KEY(?:_\d+)?", name)), key=order)
+    keys = []
+    for name in names:
+        key = os.environ[name].strip()
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+# When each rate-limited key can be used again (time.monotonic()). Shared by
+# every client in the process, so a new run does not start on a blocked key.
+KEY_COOLDOWNS: dict[str, float] = {}
 
 
 class LLMClient:
     def __init__(self, model_name: str = None, max_retries: int = 3):
-        self.api_key = os.getenv("GROQ_API_KEY")
+        self.api_keys = configured_api_keys()
+        self._clients: dict[str, AsyncOpenAI] = {}
+        self.api_key = self._first_available_key()
         configured_model = (model_name or os.getenv("MODEL_NAME") or DEFAULT_MODEL).strip()
         self.model_name = RETIRED_MODEL_REPLACEMENTS.get(configured_model, configured_model)
         self.vision_model_name = (os.getenv("VISION_MODEL_NAME") or "").strip() or None
@@ -38,19 +83,77 @@ class LLMClient:
             logger.warning("GROQ_API_KEY not found in environment.")
             return
 
-        self.client = AsyncOpenAI(api_key=self.api_key, base_url="https://api.groq.com/openai/v1")
+        if len(self.api_keys) > 1:
+            logger.info(f"{len(self.api_keys)} Groq API keys configured; rotating on rate limits.")
+        self.client = self._client_for(self.api_key)
 
     @property
     def is_configured(self) -> bool:
         return self.client is not None
 
+    def _client_for(self, key: str) -> AsyncOpenAI:
+        if key not in self._clients:
+            self._clients[key] = AsyncOpenAI(api_key=key, base_url="https://api.groq.com/openai/v1")
+        return self._clients[key]
+
+    def _key_label(self, key: str) -> str:
+        # Keys are never logged, only their position.
+        return f"key {self.api_keys.index(key) + 1} of {len(self.api_keys)}"
+
+    def _first_available_key(self):
+        if not self.api_keys:
+            return None
+        now = time.monotonic()
+        return next((key for key in self.api_keys if KEY_COOLDOWNS.get(key, 0) <= now), self.api_keys[0])
+
+    def _use_key(self, key: str):
+        self.api_key = key
+        self.client = self._client_for(key)
+
+    def _rotate_after_rate_limit(self, wait: float) -> bool:
+        """Put the current key on cooldown and switch to a free one; False if none is free."""
+        KEY_COOLDOWNS[self.api_key] = time.monotonic() + wait
+        now = time.monotonic()
+        start = self.api_keys.index(self.api_key)
+        for offset in range(1, len(self.api_keys)):
+            key = self.api_keys[(start + offset) % len(self.api_keys)]
+            if KEY_COOLDOWNS.get(key, 0) <= now:
+                logger.warning(f"Groq rate limit on {self._key_label(self.api_key)}; switching to {self._key_label(key)}.")
+                self._use_key(key)
+                return True
+        return False
+
     async def _chat_completion_with_retry(self, **kwargs):
         last_error = None
-        for attempt in range(1, self.max_retries + 1):
+        attempt = 0
+        rate_limit_waits = 0
+        while True:
+            attempt += 1
             try:
                 return await self.client.chat.completions.create(**kwargs)
             except Exception as e:
                 last_error = e
+                # A rate limit is not a failure to retry quickly: Groq's limits
+                # are per minute, so 1-2 s retries all fail and the agent then
+                # loops on empty responses. Wait for the window to reset.
+                wait = rate_limit_wait(e)
+                if wait is not None:
+                    # Another key is the fastest fix; waiting is the fallback
+                    # when every key is limited.
+                    if self._rotate_after_rate_limit(wait):
+                        continue
+                    soonest = min(self.api_keys, key=lambda key: KEY_COOLDOWNS.get(key, 0))
+                    wait = max(KEY_COOLDOWNS.get(soonest, 0) - time.monotonic(), 0)
+                    if wait > MAX_RATE_LIMIT_WAIT or rate_limit_waits >= MAX_RATE_LIMIT_RETRIES:
+                        logger.error(f"Groq rate limit reached on all {len(self.api_keys)} key(s); "
+                                     f"the next is free in {wait:.0f}s, not waiting.")
+                        break
+                    rate_limit_waits += 1
+                    logger.warning(f"Groq rate limit reached on all {len(self.api_keys)} key(s); "
+                                   f"waiting {wait:.0f}s for {self._key_label(soonest)}.")
+                    await asyncio.sleep(wait)
+                    self._use_key(soonest)
+                    continue
                 if attempt >= self.max_retries:
                     break
                 delay = min(2 ** (attempt - 1), 8)
