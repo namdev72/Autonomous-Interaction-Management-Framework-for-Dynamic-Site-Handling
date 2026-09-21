@@ -516,7 +516,13 @@ class ReasoningAgent:
                     final_verification = await self._verify_goal(contract, final_state)
                     if final_verification.status == "ACHIEVED":
                         await self._emit_log("Planner 'done' was verified.", "success")
-                        return AgentRunResult(completed=True, iterations=iterations, reason="goal_achieved")
+                        return AgentRunResult(
+                            completed=True,
+                            iterations=iterations,
+                            reason="goal_achieved",
+                            extracted_data=self.memory.extracted_data,
+                            last_url=final_state.url,
+                        )
                     
                     await self._emit_log("Planner output 'done' but goal is not verified. Recovering.", "warning")
                     action = self.recovery_policy.from_loop()

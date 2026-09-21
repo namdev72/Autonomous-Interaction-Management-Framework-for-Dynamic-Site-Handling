@@ -407,6 +407,17 @@ class GoalLoopTests(unittest.IsolatedAsyncioTestCase):
             result = await agent.execute_task("q", strategy=DirectURLStrategy(url="https://www.amazon.in/s?k=q"))
         return result, agent.goal_verifier.calls
 
+    async def test_verified_done_keeps_extracted_data(self):
+        from models.goal_models import ObservedState
+        before = ObservedState(url="https://www.amazon.in/s?k=q", title="t")
+        after = ObservedState(url="https://www.amazon.in/dp/1", title="t2")
+
+        result, _ = await self._run([before, after], ["NOT_ACHIEVED", "ACHIEVED"])
+
+        self.assertTrue(result.completed)
+        self.assertEqual(result.extracted_data, {"Extraction_Iter_1": "₹69,900"})
+        self.assertEqual(result.last_url, "https://www.amazon.in/dp/1")
+
     async def test_unchanged_page_is_not_verified_twice(self):
         from models.goal_models import ObservedState
         same = ObservedState(url="https://www.amazon.in/s?k=q", title="t")
