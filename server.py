@@ -21,14 +21,14 @@ from agents.reasoning_agent import ReasoningAgent
 from agents.answer_composer import compose_comparison_answer
 from agents.llm_planner import LLMTaskPlanner
 from models.task_models import TaskPlan
-from sites.adapters import compare_sites
+from sites.adapters import compare_sites, reads_product_cards
 from sites.registry import allowed_hosts, policy_for
 
 # Configure loguru for FastAPI
 logger.remove()
 logger.add(sys.stdout, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>")
 
-app = FastAPI(title="PRISM Agent UI Backend")
+app = FastAPI(title="Web Task Agent Backend")
 
 # Allow CORS for React frontend (default dev server port 5173)
 app.add_middleware(
@@ -113,8 +113,9 @@ async def _run_agent(session: AgentSession, query: str, plan: TaskPlan):
     # finally, which closes the WebSocket; otherwise the UI waits forever.
     try:
         await on_event("agent_started", {"message": "Agent execution starting...", "plan": plan.model_dump()})
-        if plan.task_type == "compare":
-            await on_event("log", {"level": "info", "message": f"Comparing approved sites: {', '.join(plan.candidate_sites)}"})
+        if reads_product_cards(plan):
+            verb = "Comparing" if plan.task_type == "compare" else "Searching"
+            await on_event("log", {"level": "info", "message": f"{verb} approved sites: {', '.join(plan.candidate_sites)}"})
             comparison = await compare_sites(plan)
             answer = compose_comparison_answer(plan, comparison)
             # Completed only if at least one site actually ran; a crashed or

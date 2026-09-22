@@ -58,6 +58,21 @@ class LLMPlannerTests(unittest.TestCase):
         self.assertFalse(plan.needs_clarification)
         self.assertEqual(plan.preferred_sites, ["flipkart_in"])
 
+    def test_product_searches_go_to_the_extractors_and_questions_to_the_agent(self):
+        from sites.adapters import reads_product_cards
+
+        search, _ = _plan({"task_type": "search", "category": "product", "sites": ["flipkart_in"],
+                           "search_query": "mechanical keyboard"})
+        question, _ = _plan({"task_type": "extract", "category": "product", "sites": ["flipkart_in"],
+                             "search_query": "oneplus 13"})
+        flight, _ = _plan({"task_type": "search", "category": "flight", "sites": ["google_flights"],
+                           "search_query": "flights from Delhi to Mumbai on 15 Oct one way"})
+
+        self.assertTrue(reads_product_cards(search))
+        self.assertEqual(question.task_type, "extract")
+        self.assertFalse(reads_product_cards(question))
+        self.assertFalse(reads_product_cards(flight))
+
     def test_invalid_constraints_are_dropped(self):
         plan, _ = _plan({"task_type": "search", "sites": ["flipkart_in"], "search_query": "kettle",
                          "constraints": {"minimum_rating": "9", "maximum_price": "cheap", "colour": "red"}})
@@ -116,6 +131,52 @@ class FlightTripTypeTests(unittest.TestCase):
 
         self.assertNotIn("one%20way", url)
         self.assertIn("round%20trip", url)
+
+    def test_flight_starts_on_the_search_without_the_site_named(self):
+        from models.strategy_models import DirectURLStrategy
+        from models.task_models import TaskPlan
+        from router.task_router import TaskRouter
+
+        plan = TaskPlan(task_type="search", subject="flights from Pune to Goa on 23 Sep",
+                        preferred_sites=["google_flights"], candidate_sites=["google_flights"])
+        strategy = TaskRouter().route_task("find flights from Pune to Goa\nUser clarification: 23 Sep", plan)
+
+        self.assertIsInstance(strategy, DirectURLStrategy)
+        self.assertIn("/travel/flights?q=flights%20from%20Pune%20to%20Goa", strategy.url)
+
+
+
+class FlightDateTests(unittest.TestCase):
+    """A flight without a date is always asked for one, whatever the LLM did."""
+
+    FLIGHT = {"task_type": "search", "category": "flight", "sites": ["google_flights"],
+              "search_query": "flights from Delhi to Bangalore", "missing": None}
+
+    def test_llm_plan_without_the_question_still_asks_for_the_date(self):
+        plan, _ = _plan(dict(self.FLIGHT), query="Find flights from Delhi to Bangalore")
+
+        self.assertIn("What date", plan.clarification_question)
+
+    def test_failed_llm_call_still_asks_for_the_date(self):
+        plan, _ = _plan(None, query="Find flights from Delhi to Bangalore on google flights",
+                        error=RuntimeError("timed out"))
+
+        self.assertEqual(plan.planner, "rules")
+        self.assertIn("What date", plan.clarification_question)
+
+    def test_a_date_in_the_request_or_an_answer_is_not_asked_again(self):
+        for query, answers in (("Find flights from Delhi to Bangalore on 23 October", None),
+                               ("Find flights from Delhi to Bangalore", ["Oct 23"]),
+                               ("Find flights from Delhi to Bangalore tomorrow", None)):
+            with self.subTest(query=query, answers=answers):
+                plan, _ = _plan(dict(self.FLIGHT), query=query, answers=answers)
+                self.assertFalse(plan.needs_clarification)
+
+    def test_products_are_not_asked_for_a_date(self):
+        plan, _ = _plan({"task_type": "search", "category": "product", "sites": ["flipkart_in"],
+                         "search_query": "kettle"}, query="search kettle on flipkart")
+
+        self.assertFalse(plan.needs_clarification)
 
 
 if __name__ == "__main__":

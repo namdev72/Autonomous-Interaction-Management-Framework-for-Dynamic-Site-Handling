@@ -25,9 +25,14 @@ from memory.signature import descriptor_for_target, page_key, target_for_descrip
 from models.action_models import AgentAction
 from models.orchestration_models import ActionResult, AgentRunResult, AgentState, StepDecision
 from models.goal_models import GoalContract, ObservedState, VerificationResult
+from sites.adapters import prepare_site
+from sites.registry import policy_for_url
 
 
 SCREENSHOT_DIR = "screenshots"
+# Iterations in a row with a failed LLM call before the run stops. The client
+# has already retried and switched keys within each call by then.
+MAX_LLM_FAILURES = 3
 
 
 def prune_screenshots(root: str = SCREENSHOT_DIR, keep: Optional[int] = None) -> int:
@@ -255,6 +260,7 @@ class ReasoningAgent:
             return StepDecision(
                 action=AgentAction(action="wait", value="2", reasoning="LLM returned an empty response."),
                 source="orchestrator",
+                llm_failed=True,
             )
 
         try:
@@ -478,6 +484,9 @@ class ReasoningAgent:
         if "answer" not in data and verification.answer_parts:
             if self._on_page(verification.answer_parts, state):
                 data["answer"] = " · ".join(verification.answer_parts)
+                # The separate values too, so the UI can lay out a flight
+                # (times, stops, price) rather than show one joined line.
+                data["answer_parts"] = list(verification.answer_parts)
             else:
                 logger.warning(f"Dropped an answer not found on the page: {verification.answer_parts}")
         return data
@@ -562,6 +571,9 @@ class ReasoningAgent:
                 return AgentRunResult(completed=False, iterations=0, reason="site_not_approved")
 
             await self._emit_log(f"Launching browser and navigating to {target_url}...")
+            site = policy_for_url(target_url)
+            if site and target_url != site.home_url:
+                await prepare_site(self.browser_controller, site)
             success = await self.browser_controller.open_website(target_url)
             if not success:
                 await self._emit_log("Failed to load website. Aborting.", "error")
@@ -570,6 +582,12 @@ class ReasoningAgent:
             await self.browser_controller.wait_for_load()
             executor = BrowserExecutor(self.browser_controller.page, self.browser_controller.allowed_hosts)
             self.browser_controller.blocked_navigations.clear()
+
+            # Iterations in a row where an LLM call failed. The page does not
+            # change while the agent waits for the LLM, which is not the agent
+            # failing to make progress, so these do not count toward stuck.
+            llm_failures = 0
+            last_step_waited_for_llm = False
 
             # THE GOLDEN LOOP
             for iterations in range(1, self.max_iterations + 1):
@@ -601,8 +619,25 @@ class ReasoningAgent:
                 if verification.status == "NOT_ACHIEVED":
                     await self._emit_log(f"Goal verification is NOT_ACHIEVED. Continuing...")
 
+                # An empty verifier reply is a failed call, not a verdict.
+                verify_failed = verification.status == "UNKNOWN" and verification.confidence == 0.0
+                if verify_failed or last_step_waited_for_llm:
+                    llm_failures += 1
+                    if llm_failures >= MAX_LLM_FAILURES:
+                        await self._emit_log("The LLM did not answer several times in a row. Stopping.", "error")
+                        return AgentRunResult(
+                            completed=False,
+                            iterations=iterations,
+                            reason="llm_unavailable",
+                            extracted_data=self.memory.extracted_data,
+                            last_url=observed_state.url,
+                        )
+                else:
+                    llm_failures = 0
+
                 # 3. DETECT STUCK STATE
-                if self.progress_tracker.is_stuck(observed_state, self.memory.extracted_data.values()):
+                if not last_step_waited_for_llm and self.progress_tracker.is_stuck(
+                        observed_state, self.memory.extracted_data.values()):
                     await self._emit_log("Agent is stuck with no progress. Aborting.", "error")
                     # Keep what was read before getting stuck, as the
                     # max-iterations exit does.
@@ -620,6 +655,7 @@ class ReasoningAgent:
 
                 # 5. PLAN
                 decision = await self._decide_next_step(state, strategy_note)
+                last_step_waited_for_llm = bool(decision and decision.llm_failed)
                 if not decision:
                     last_result = ActionResult(success=False, action="invalid", error="Invalid LLM action.")
                     await asyncio.sleep(2)

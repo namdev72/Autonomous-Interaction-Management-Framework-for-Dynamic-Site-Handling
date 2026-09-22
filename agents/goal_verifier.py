@@ -27,8 +27,17 @@ class GoalVerifier:
 
         answer_parts: if the goal asks for information (a price, a time, a name, the cheapest option),
         the values that answer it, all from the same result, each copied exactly from one line of
-        the Current State text. Include the trip type and date when the page shows them, e.g.
+        the Current State text. A request to find or search flights asks for information: the
+        first flight listed (the cheapest, if asked for). Include the trip type and date when the page shows them, e.g.
         ["Example Air", "9:05 PM", "11:20 PM", "Nonstop", "$212", "One way", "Mar 3"].
+        For a product, the result must be the product the goal names, model number included: a
+        different model ("MX Master 4" when the goal names "MX Master 3S") or a result marked
+        Sponsored does not answer it, even when listed first. Give the product's title as one part
+        and each value as its own part, e.g. ["Example Mouse 3S Wireless", "4.6 out of 5 stars",
+        "17,208 ratings"].
+        For a question asking how many, each item counted as its own part and nothing else (no
+        title, no heading), since the answer shown is the number of parts, e.g. for storage
+        variants ["128 GB", "256 GB", "512 GB"].
         Otherwise [].
 
         missing: when not ACHIEVED, the one thing that still has to happen on this page, as an

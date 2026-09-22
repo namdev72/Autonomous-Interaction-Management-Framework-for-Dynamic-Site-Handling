@@ -17,6 +17,14 @@ class SitePolicy:
     # Where to start a task that is not a search, when the domain root is the
     # wrong place (Google Flights is not google.com).
     home_path: str = ""
+    # Open the home page before the search URL. amazon.com answers a search
+    # URL opened cold with its "Sorry! Something went wrong!" page; after the
+    # home page has set its session cookies, the same URL returns results.
+    open_home_first: bool = False
+    # Delivery ZIP code to set before searching. amazon.com hides prices
+    # ("See options") on products that do not ship to where the visitor is,
+    # so from India a search showed no prices at all.
+    delivery_zip: str = ""
 
     def build_search_url(self, query: str) -> str:
         return self.search_url.replace("{query}", quote(query.strip(), safe=""))
@@ -33,7 +41,7 @@ SITE_POLICIES: Dict[str, SitePolicy] = {
     "amazon_in": SitePolicy("amazon_in", "Amazon India", ("amazon.in", "www.amazon.in"), "IN", "INR", ("product_search", "price", "rating"),
                             "https://www.amazon.in/s?k={query}"),
     "amazon_us": SitePolicy("amazon_us", "Amazon US", ("amazon.com", "www.amazon.com"), "US", "USD", ("product_search", "price", "rating"),
-                            "https://www.amazon.com/s?k={query}"),
+                            "https://www.amazon.com/s?k={query}", open_home_first=True, delivery_zip="10001"),
     "flipkart_in": SitePolicy("flipkart_in", "Flipkart", ("flipkart.com", "www.flipkart.com"), "IN", "INR", ("product_search", "price", "rating"),
                               "https://www.flipkart.com/search?q={query}"),
     "google_flights": SitePolicy("google_flights", "Google Flights", ("google.com", "www.google.com"), "GLOBAL", "", ("flight_search", "price"),
@@ -61,6 +69,12 @@ def policy_for(key: str) -> SitePolicy:
         return SITE_POLICIES[key]
     except KeyError as exc:
         raise ValueError(f"Site is not whitelisted: {key}") from exc
+
+
+def policy_for_url(url: str) -> Optional[SitePolicy]:
+    """The approved site a URL belongs to, or None."""
+    host = (urlsplit(url).hostname or "").lower()
+    return next((policy for policy in SITE_POLICIES.values() if host in policy.domains), None)
 
 
 def supports_comparison(policy: SitePolicy) -> bool:
