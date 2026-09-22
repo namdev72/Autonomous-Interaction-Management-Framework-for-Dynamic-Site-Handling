@@ -1,35 +1,36 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { ChevronRight } from 'lucide-react';
 import type { AgentEvent } from '../hooks/useAgent';
 import { ActivityEventDisplay } from './ActivityEventDisplay';
 
+/** Every step the agent took, folded away under the result. */
 export function ActivityLog({ events }: { events: AgentEvent[] }) {
-  const endOfLogRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const listRef = useRef<HTMLOListElement>(null);
 
   useEffect(() => {
-    // Auto-scroll to bottom on new event
-    endOfLogRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [events]);
+    // Follow new steps inside the list, without scrolling the page.
+    if (open && listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+  }, [events, open]);
 
   return (
-    <div className="flex flex-col h-full bg-slate-900 rounded-xl shadow-lg border border-slate-800 overflow-hidden flex-1">
-      <div className="p-4 border-b border-slate-800 bg-slate-900/50">
-        <h2 className="text-sm font-medium text-slate-400 uppercase tracking-wider">
-          Real-time Agent Activity
-        </h2>
-      </div>
-      
-      <div className="flex-1 overflow-y-auto p-4 space-y-3">
-        {events.length === 0 ? (
-          <div className="h-full flex items-center justify-center text-slate-500 text-sm">
-            No activity yet. Run the agent to see live events.
-          </div>
-        ) : (
-          events.map((evt, idx) => (
-            <ActivityEventDisplay key={idx} event={evt} />
-          ))
-        )}
-        <div ref={endOfLogRef} />
-      </div>
-    </div>
+    <section className="border-t border-line pt-4">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className="flex items-center gap-1.5 text-sm font-medium text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+      >
+        <ChevronRight size={16} className={`transition-transform ${open ? 'rotate-90' : ''}`} />
+        {open ? 'Hide' : 'Show'} what the agent did ({events.length} {events.length === 1 ? 'step' : 'steps'})
+      </button>
+      {open && (
+        <ol ref={listRef} className="mt-3 max-h-96 overflow-y-auto rounded-xl border border-line bg-surface py-2">
+          {events.map((event, index) => (
+            <ActivityEventDisplay key={index} event={event} />
+          ))}
+        </ol>
+      )}
+    </section>
   );
 }

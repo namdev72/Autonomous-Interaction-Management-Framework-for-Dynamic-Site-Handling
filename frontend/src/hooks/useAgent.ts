@@ -18,12 +18,15 @@ export function useAgent() {
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [result, setResult] = useState<any>(null);
   const [clarification, setClarification] = useState<{ question: string; options: string[] } | null>(null);
+  // The request as typed, for answers that depend on its wording ("how many").
+  const [query, setQuery] = useState('');
   const wsRef = useRef<WebSocket | null>(null);
   const sessionIdRef = useRef<string | null>(null);
 
   const startAgent = useCallback(async (query: string) => {
     try {
       setStatus('RUNNING');
+      setQuery(query);
       setEvents([]);
       setResult(null);
       setClarification(null);
@@ -130,5 +133,5 @@ export function useAgent() {
     }
   }, [status]);
 
-  return { status, events, result, clarification, startAgent, respondToAgent, stopAgent, clear };
+  return { status, query, events, result, clarification, startAgent, respondToAgent, stopAgent, clear };
 }

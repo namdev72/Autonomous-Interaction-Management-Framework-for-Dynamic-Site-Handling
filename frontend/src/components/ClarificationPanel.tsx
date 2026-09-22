@@ -1,13 +1,14 @@
 import { useState } from 'react';
-import { ArrowRight, MessageCircleQuestion } from 'lucide-react';
+import { ArrowRight } from 'lucide-react';
 
 interface ClarificationPanelProps {
   question: string;
   options: string[];
   onSubmit: (answer: string) => void;
+  onCancel: () => void;
 }
 
-export function ClarificationPanel({ question, options, onSubmit }: ClarificationPanelProps) {
+export function ClarificationPanel({ question, options, onSubmit, onCancel }: ClarificationPanelProps) {
   const [answer, setAnswer] = useState('');
 
   const submit = (value: string) => {
@@ -15,27 +16,26 @@ export function ClarificationPanel({ question, options, onSubmit }: Clarificatio
   };
 
   return (
-    <section className="flex flex-col gap-4 p-5 bg-slate-900 rounded-xl border border-amber-800/60 shadow-lg">
-      <div className="flex items-start gap-3">
-        <MessageCircleQuestion className="w-5 h-5 text-amber-400 mt-0.5" />
-        <div>
-          <h2 className="text-sm font-semibold text-amber-200">The agent needs your choice</h2>
-          <p className="mt-1 text-sm text-slate-300">{question}</p>
+    <section className="flex flex-col gap-4 rounded-2xl border border-accent/40 bg-accent-soft p-5 sm:p-6">
+      <div>
+        <span className="text-sm font-medium text-accent">One question before I start</span>
+        <h2 className="mt-1 font-display text-2xl font-medium leading-snug text-ink">{question}</h2>
+      </div>
+      {options.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {options.map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => submit(option)}
+              className="flex items-center gap-2 rounded-xl border border-line bg-surface px-4 py-2.5 font-medium text-ink transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-accent"
+            >
+              {option}
+              <ArrowRight size={16} className="text-accent" />
+            </button>
+          ))}
         </div>
-      </div>
-      <div className="flex flex-wrap gap-2">
-        {options.map((option) => (
-          <button
-            key={option}
-            type="button"
-            onClick={() => submit(option)}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-700/60 bg-amber-950/30 text-amber-100 hover:bg-amber-900/50 transition-colors"
-          >
-            {option}
-            <ArrowRight size={15} />
-          </button>
-        ))}
-      </div>
+      )}
       <form
         className="flex gap-2"
         onSubmit={(event) => {
@@ -43,21 +43,29 @@ export function ClarificationPanel({ question, options, onSubmit }: Clarificatio
           submit(answer);
         }}
       >
+        <label htmlFor="clarification" className="sr-only">Your answer</label>
         <input
+          id="clarification"
           value={answer}
           onChange={(event) => setAnswer(event.target.value)}
-          placeholder="Type another answer"
-          className="min-w-0 flex-1 px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-slate-100 outline-none focus:border-amber-500"
+          placeholder={options.length > 0 ? 'Or type your answer' : 'Type your answer'}
+          className="min-w-0 flex-1 rounded-xl border border-line bg-surface px-4 py-2.5 text-ink outline-none placeholder:text-faint focus:border-accent"
         />
         <button
           type="submit"
           disabled={!answer.trim()}
-          aria-label="Submit answer"
-          className="px-3 py-2 rounded-lg bg-amber-600 text-white disabled:opacity-40 hover:bg-amber-500"
+          className="rounded-xl bg-accent px-4 py-2.5 font-medium text-accent-ink hover:bg-accent-hover disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
-          <ArrowRight size={18} />
+          Answer
         </button>
       </form>
+      <button
+        type="button"
+        onClick={onCancel}
+        className="self-start text-sm text-muted underline-offset-4 hover:text-ink hover:underline"
+      >
+        Cancel this search
+      </button>
     </section>
   );
 }
