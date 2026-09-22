@@ -7,7 +7,7 @@ from loguru import logger
 
 from browser.controller import BrowserController
 from models.task_models import UNAVAILABLE_STATUSES, ProductOffer, SiteRunResult, TaskPlan
-from sites.registry import SitePolicy, policy_for
+from sites.registry import SitePolicy, policy_for, supports_comparison
 
 
 CHALLENGE_MARKERS = (
@@ -27,6 +27,15 @@ CHALLENGE_JS = """
 # 16") and would otherwise win on price.
 NON_PRODUCT_TERMS = ("case", "cover", "charger", "adapter", "protector", "screen guard", "tempered glass",
                      "stand", "cable", "skin", "sticker")
+
+
+# Offers kept per site. The limit counts kept offers, not cards read: sponsored
+# cards (no product link) and unrelated results are skipped, and counting them
+# left 4 of the first 10 Amazon cards for "wireless mouse" and never read the
+# rest of the page.
+MAX_OFFERS = 20
+# Cards read from a Flipkart page, to bound the work done inside the browser.
+MAX_CARDS_READ = 60
 
 
 def _number(text: str | None) -> float | None:
@@ -53,17 +62,29 @@ def _relevant_title(title: str, subject: str) -> bool:
     if not tokens:
         return True
     title_lower = title.lower()
-    title_tokens = set(_tokens(title))
 
     def found(token: str) -> bool:
-        # A token with a digit is a model identifier ("16", "s6") and must
-        # match a whole title token: "16" is not in "16e" or "16.63". Words
-        # match loosely, so "shoe" still finds "shoes".
-        if any(char.isdigit() for char in token):
-            return token in title_tokens
+        # Words match loosely, so "shoe" still finds "shoes".
         return token in title_lower
 
-    return sum(found(token) for token in tokens) >= min(2, len(tokens))
+    # A token with a digit is a model identifier ("16", "s6", "1000xm5") and
+    # every one must be in the title: sharing the brand and the product type
+    # made "Sony WH-CH520 Headphones" a match for "sony wh-1000xm5 headphones".
+    models = [token for token in tokens if any(char.isdigit() for char in token)]
+    return (all(_has_model(title_lower, token) for token in models)
+            and sum(found(token) for token in tokens) >= min(2, len(tokens)))
+
+
+def _has_model(title_lower: str, token: str) -> bool:
+    """
+    A model identifier matches whole: "16" is not in "16e" or "16.63". Its
+    parts may be spaced ("128gb" is "128 GB"), and a number may follow
+    letters ("1000xm5" is in "WH1000XM5").
+    """
+    parts = re.findall(r"[a-z]+|\d+(?:\.\d+)?", token)
+    lead = r"(?<![a-z0-9])" if token[0].isalpha() else r"(?<![0-9.])"
+    pattern = lead + r"[\s-]*".join(re.escape(part) for part in parts) + r"(?![a-z0-9]|\.\d)"
+    return re.search(pattern, title_lower) is not None
 
 
 def _join_title(headings: List[str]) -> str:
@@ -92,10 +113,12 @@ def _is_candidate(title: str, subject: str) -> bool:
     return not _is_accessory(title, subject) and _relevant_title(title, subject)
 
 
-async def _amazon_offers(page, policy: SitePolicy, subject: str, limit: int = 10) -> List[ProductOffer]:
+async def _amazon_offers(page, policy: SitePolicy, subject: str, limit: int = MAX_OFFERS) -> List[ProductOffer]:
     cards = page.locator('[data-component-type="s-search-result"]')
     offers = []
-    for index in range(min(await cards.count(), limit)):
+    for index in range(await cards.count()):
+        if len(offers) >= limit:
+            break
         card = cards.nth(index)
         title_links = card.locator('a[href*="/dp/"], a[href*="/gp/product/"]')
         if await title_links.count() == 0:
@@ -181,13 +204,15 @@ def _status_label(lines: List[str]) -> str | None:
     return next((line for line in lines if line.lower() in UNAVAILABLE_STATUSES), None)
 
 
-async def _flipkart_offers(page, policy: SitePolicy, subject: str, limit: int = 10) -> List[ProductOffer]:
+async def _flipkart_offers(page, policy: SitePolicy, subject: str, limit: int = MAX_OFFERS) -> List[ProductOffer]:
     try:
         await page.wait_for_selector("div[data-id]", timeout=5000)
     except Exception:
         return []
     offers = []
-    for card in await page.evaluate(FLIPKART_CARDS_JS, limit):
+    for card in await page.evaluate(FLIPKART_CARDS_JS, MAX_CARDS_READ):
+        if len(offers) >= limit:
+            break
         title = card["title"].strip()
         if not (title and card["href"]) or not _is_candidate(title, subject):
             continue
@@ -212,6 +237,7 @@ async def search_site(policy: SitePolicy, task: TaskPlan) -> SiteRunResult:
         return SiteRunResult(site=policy.key, status="failed", warnings=[f"Price comparison is not supported on {policy.label}."])
     controller = BrowserController(headless=True, allowed_hosts=set(policy.domains))
     try:
+        await prepare_site(controller, policy)
         if not await controller.open_website(policy.build_search_url(task.subject)):
             return SiteRunResult(site=policy.key, status="failed", warnings=["Initial navigation failed."])
         controller.page.set_default_timeout(5000)
@@ -237,6 +263,42 @@ async def search_site(policy: SitePolicy, task: TaskPlan) -> SiteRunResult:
             await controller.close_browser()
         except Exception as exc:
             logger.warning(f"Failed to close browser for {policy.key}: {exc}")
+
+
+async def prepare_site(controller: BrowserController, policy: SitePolicy) -> None:
+    """
+    What a site needs before its search URL is opened: its home page, and a
+    delivery ZIP code so prices are shown. Best effort: a failure here is
+    logged, and the search then shows whatever the site gives.
+    """
+    if not (policy.open_home_first or policy.delivery_zip):
+        return
+    if not await controller.open_website(policy.home_url):
+        return
+    await controller.wait_for_load()
+    if policy.delivery_zip:
+        page = controller.page
+        try:
+            # Amazon's "Deliver to" box, which any visitor can change.
+            await page.click("#nav-global-location-popover-link", timeout=8000)
+            await page.fill("#GLUXZipUpdateInput", policy.delivery_zip, timeout=8000)
+            await page.click("#GLUXZipUpdate", timeout=8000)
+            await page.wait_for_timeout(2500)
+        except Exception as exc:
+            logger.warning(f"Could not set the delivery ZIP on {policy.label}: {exc}")
+
+
+def reads_product_cards(task: TaskPlan) -> bool:
+    """
+    Whether the task is answered by the product extractors rather than the
+    browsing agent: comparisons, and plain product searches on sites that have
+    an extractor. The agent stops once a search's results page is open, with
+    nothing to report, while the extractors return the products on it.
+    """
+    if task.task_type == "compare":
+        return True
+    return (task.task_type == "search" and bool(task.candidate_sites)
+            and all(supports_comparison(policy_for(key)) for key in task.candidate_sites))
 
 
 async def compare_sites(task: TaskPlan) -> List[SiteRunResult]:

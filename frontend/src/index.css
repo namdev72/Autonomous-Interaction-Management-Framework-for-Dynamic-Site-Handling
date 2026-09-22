@@ -1,25 +1,65 @@
 @import "tailwindcss";
 
-@layer base {
-  body {
-    @apply bg-slate-950 text-slate-200 antialiased;
+/* Colours are tokens so the whole UI follows the system theme: the dark
+   values below replace the light ones, and components never need dark:. */
+@theme {
+  --font-display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-page: #f2f5f4;
+  --color-surface: #ffffff;
+  --color-sunken: #e9eeec;
+  --color-ink: #15201e;
+  --color-muted: #566462;
+  --color-faint: #86938f;
+  --color-line: #d9e0de;
+  --color-accent: #0d6b66;
+  --color-accent-hover: #0a5753;
+  --color-accent-ink: #ffffff;
+  --color-accent-soft: #dff0ed;
+  /* Marigold marks the lowest price, and nothing else. */
+  --color-deal: #9a6208;
+  --color-deal-bar: #e2a33a;
+  --color-deal-soft: #fcf1da;
+  --color-danger: #b42318;
+  --color-danger-soft: #fdecea;
+}
+
+:root {
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-page: #0d1211;
+    --color-surface: #151c1b;
+    --color-sunken: #101716;
+    --color-ink: #e3eae8;
+    --color-muted: #9aa8a5;
+    --color-faint: #6c7a77;
+    --color-line: #26302e;
+    --color-accent: #4cb8af;
+    --color-accent-hover: #6ccac2;
+    --color-accent-ink: #062220;
+    --color-accent-soft: #12302d;
+    --color-deal: #eab356;
+    --color-deal-bar: #d99a2f;
+    --color-deal-soft: #2d2410;
+    --color-danger: #f28b80;
+    --color-danger-soft: #3a1714;
   }
 }
 
-/* Custom scrollbar for activity log */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+@layer base {
+  body {
+    @apply bg-page text-ink font-sans antialiased;
+  }
 }
 
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  @apply bg-slate-700 rounded-full;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  @apply bg-slate-600;
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

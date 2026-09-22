@@ -49,6 +49,9 @@ class StepDecision(BaseModel):
     action: AgentAction
     source: str = "llm"
     needs_verification: bool = False
+    # The LLM call failed (rate limit, timeout, no JSON), so this step is a
+    # wait, not the agent's choice.
+    llm_failed: bool = False
 
 
 class AgentRunResult(BaseModel):

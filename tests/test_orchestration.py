@@ -91,6 +91,63 @@ class FakeGroq:
         self.chat.completions.create = create
 
 
+class JsonValidateFailed(Exception):
+    """Groq's 400 when the model's reply is not JSON, as the SDK raises it."""
+
+    def __init__(self, failed_generation):
+        super().__init__("Failed to generate JSON")
+        self.status_code = 400
+        self.body = {"message": "Failed to generate JSON", "code": "json_validate_failed",
+                     "failed_generation": failed_generation}
+
+
+class JsonRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    """The step planner's model sometimes answers in prose despite json_object mode."""
+
+    def _client(self, replies):
+        from llm.llm_client import LLMClient
+
+        with patch.dict("os.environ", {"GROQ_API_KEY": "a"}, clear=True), patch("llm.llm_client.AsyncOpenAI", FakeGroq):
+            client = LLMClient()
+        requests = []
+
+        async def create(**kwargs):
+            requests.append(kwargs["messages"])
+            reply = replies.pop(0)
+            if isinstance(reply, Exception):
+                raise reply
+            message = type("Message", (), {"content": reply})()
+            return type("Response", (), {"choices": [type("Choice", (), {"message": message})()]})()
+
+        client.client.chat.completions.create = create
+        return client, requests
+
+    async def test_prose_is_answered_with_one_request_for_json_only(self):
+        prose = 'The origin is "Tirupati". Action: Click on the origin input field (pw-id-12).'
+        client, requests = self._client([JsonValidateFailed(prose), '{"action": "click", "target": "pw-id-12"}'])
+
+        with patch("llm.llm_client.asyncio.sleep"):
+            result = await client.generate_json("system", "user")
+
+        self.assertEqual(result, {"action": "click", "target": "pw-id-12"})
+        # Not the identical request three times: once, then once with the prose shown back.
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(requests[1][2], {"role": "assistant", "content": prose})
+
+    async def test_json_wrapped_in_prose_is_used_without_asking_again(self):
+        client, requests = self._client([JsonValidateFailed('Here it is: {"action": "scroll"} done')])
+
+        self.assertEqual(await client.generate_json("system", "user"), {"action": "scroll"})
+        self.assertEqual(len(requests), 1)
+
+    async def test_prose_twice_gives_up(self):
+        client, requests = self._client([JsonValidateFailed("no"), JsonValidateFailed("still no")])
+
+        with patch("llm.llm_client.asyncio.sleep"):
+            self.assertEqual(await client.generate_json("system", "user"), {})
+        self.assertEqual(len(requests), 2)
+
+
 class RateLimitTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         from llm import llm_client
@@ -278,6 +335,17 @@ class TaskPlannerTests(unittest.TestCase):
 
 
 class ComparisonAnswerTests(unittest.TestCase):
+    def test_products_without_prices_are_reported_as_such(self):
+        from models.task_models import SiteRunResult
+
+        plan = TaskPlanner().plan("show me running shoes on amazon us")
+        result = SiteRunResult(site="amazon_us", status="completed",
+                               offers=[_offer("Brooks Revel 8 Running Shoe", None)])
+
+        answer = compose_comparison_answer(plan, [result])
+
+        self.assertEqual(answer["answer"], "I found 1 matching product(s), but the site showed no prices for them.")
+
     def test_answer_ranks_matching_offers_by_price(self):
         plan = TaskPlanner().plan("compare iphone 16 prices on amazon india")
         results = [
@@ -444,6 +512,33 @@ class SearchSiteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.warnings, ["Initial navigation failed."])
 
+    async def test_amazon_us_search_opens_the_home_page_first(self):
+        from sites.adapters import search_site
+        from sites.registry import policy_for
+
+        opened = []
+
+        class RecordingController(ChallengeController):
+            async def open_website(self, url):
+                opened.append(url)
+                return True
+
+        plan = TaskPlanner().plan("show me running shoes on amazon us")
+        for site in ("amazon_us", "amazon_in"):
+            with patch("sites.adapters.BrowserController", RecordingController):
+                await search_site(policy_for(site), plan)
+
+        self.assertEqual(opened[:2], ["https://www.amazon.com", policy_for("amazon_us").build_search_url(plan.subject)])
+        # Amazon India returns results for a search URL opened cold.
+        self.assertEqual(opened[2:], [policy_for("amazon_in").build_search_url(plan.subject)])
+
+    def test_urls_map_to_their_approved_site(self):
+        from sites.registry import policy_for_url
+
+        self.assertEqual(policy_for_url("https://www.amazon.com/s?k=shoes").key, "amazon_us")
+        self.assertEqual(policy_for_url("https://amazon.in/dp/B0").key, "amazon_in")
+        self.assertIsNone(policy_for_url("https://www.ebay.com/"))
+
 
 class FakeFlipkartPage:
     """Returns cards shaped like FLIPKART_CARDS_JS output from the live site."""
@@ -477,6 +572,19 @@ class FlipkartOfferTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(offers[1].rating)
         self.assertEqual(offers[0].product_url, "https://flipkart.com/apple-iphone-16-black-128-gb/p/itmb07?pid=MOB1")
 
+    async def test_skipped_cards_do_not_count_toward_the_limit(self):
+        from sites.adapters import _flipkart_offers
+        from sites.registry import policy_for
+
+        cover = {"href": "/cover/p/itm0", "title": "Back Cover for Wireless Mouse", "price": "₹99", "rating": None}
+        mouse = {"href": "/mouse/p/itm1", "title": "Portronics Toad 23 Wireless Mouse", "price": "₹259", "rating": "4"}
+        page = FakeFlipkartPage([cover] * 10 + [mouse] * 5)
+
+        offers = await _flipkart_offers(page, policy_for("flipkart_in"), "wireless mouse", limit=3)
+
+        self.assertEqual(len(offers), 3)
+        self.assertTrue(all(offer.title == mouse["title"] for offer in offers))
+
 
 class AmazonTitleTests(unittest.TestCase):
     # Headings and titles below are from live amazon.in results for "iPhone 16".
@@ -503,6 +611,22 @@ class AmazonTitleTests(unittest.TestCase):
         self.assertFalse(_relevant_title("Apple iPhone 17 256 GB: 15.93 cm (6.3″) Display", "iPhone 16"))
         self.assertTrue(_relevant_title("iPhone 16 128 GB: 5G Mobile Phone with Camera Control", "iPhone 16"))
         self.assertTrue(_relevant_title("Samsung Galaxy S6 Edge (Gold, 32 GB)", "Galaxy S6 pro"))
+
+    def test_every_model_number_must_match(self):
+        from sites.adapters import _relevant_title
+
+        subject = "Sony WH-1000XM5 headphones"
+        # Brand, series and product type match, but not the model.
+        self.assertFalse(_relevant_title("Sony WH-CH520 Wireless Bluetooth Headphones On Ear with Mic", subject))
+        self.assertFalse(_relevant_title("SONY WH1000XM4/BMIN Bluetooth", subject))
+        self.assertTrue(_relevant_title("Sony WH-1000XM5 Best Active Noise Cancelling Wireless Bluetooth Over Ear Headphones", subject))
+        self.assertTrue(_relevant_title("SONY WH1000XM5 Wireless Noise Cancellation Bluetooth", subject))
+
+    def test_model_number_parts_may_be_spaced(self):
+        from sites.adapters import _relevant_title
+
+        self.assertTrue(_relevant_title("Apple iPhone 16 (Black, 128 GB)", "iphone 16 128gb"))
+        self.assertFalse(_relevant_title("Apple iPhone 16 (Black, 256 GB)", "iphone 16 128gb"))
 
     def test_words_still_match_loosely(self):
         from sites.adapters import _relevant_title
@@ -923,6 +1047,44 @@ class GoalLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.extracted_data, {"Extraction_Iter_1": "₹11,860"})
         self.assertEqual(result.last_url, "https://www.google.com/travel/flights")
 
+    async def test_failed_llm_calls_are_not_reported_as_no_progress(self):
+        from models.goal_models import ObservedState
+        from models.orchestration_models import AgentState, StepDecision
+        page = ObservedState(url="https://www.flipkart.com/oneplus-13/p/itm1", title="OnePlus 13")
+
+        agent = _test_agent(FailingIntentParser())
+        agent.max_iterations = 10
+        # Every step planner call fails, so each step is a wait for the LLM.
+        agent.goal_verifier = CountingVerifier(["UNKNOWN"] * 10, ())
+        acted = []
+
+        async def opened(url):
+            return True
+
+        async def build_state(*args):
+            return AgentState(user_query="q", iteration=1, current_url=page.url, page_context="", memory_context="")
+
+        async def decide(*args):
+            return StepDecision(action=AgentAction(action="wait", value="2"), source="orchestrator", llm_failed=True)
+
+        async def act(executor, action, state):
+            acted.append(action.action)
+            return ActionResult(success=True, action=action.action)
+
+        agent.browser_controller.open_website = opened
+        agent._build_state = build_state
+        agent._decide_next_step = decide
+        agent._execute_with_recovery = act
+        FakeObserver.states = [page.model_copy() for _ in range(10)]
+        from models.strategy_models import DirectURLStrategy
+        with patch("agents.reasoning_agent.StateObserver", FakeObserver):
+            result = await agent.execute_task("q", strategy=DirectURLStrategy(url=page.url))
+
+        # Before, the unchanged page read as stuck: "no_progress" at iteration 3.
+        self.assertEqual(result.reason, "llm_unavailable")
+        # The waits of iterations 1-3 are counted at the start of 2-4.
+        self.assertEqual(result.iterations, 4)
+
     RESULTS_PAGE = dict(url="https://www.google.com/travel/flights", title="Delhi to Mumbai",
                         visible_text=["One way", "Sep 22", "12:15 AM", "5:30 AM", "IndiGo", "1 stop", "₹5,985", "Air India", "₹6,249"])
 
@@ -933,7 +1095,10 @@ class GoalLoopTests(unittest.IsolatedAsyncioTestCase):
         result, _ = await self._run([ObservedState(**self.RESULTS_PAGE)], ["ACHIEVED"], answer_parts=parts, extracted={})
 
         self.assertTrue(result.completed)
-        self.assertEqual(result.extracted_data, {"answer": "IndiGo · 12:15 AM · 5:30 AM · 1 stop · ₹5,985 · One way · Sep 22"})
+        self.assertEqual(result.extracted_data, {
+            "answer": "IndiGo · 12:15 AM · 5:30 AM · 1 stop · ₹5,985 · One way · Sep 22",
+            "answer_parts": ["IndiGo", "12:15 AM", "5:30 AM", "1 stop", "₹5,985", "One way", "Sep 22"],
+        })
 
     async def test_answer_parts_not_on_the_page_are_dropped(self):
         from models.goal_models import ObservedState
@@ -955,7 +1120,7 @@ class GoalLoopTests(unittest.IsolatedAsyncioTestCase):
         result, _ = await self._run([ObservedState(**page)], ["ACHIEVED"],
                                     answer_parts=["IndiGo", "₹11,860", "Round trip", "Sep 24"], extracted={})
 
-        self.assertEqual(result.extracted_data, {"answer": "IndiGo · ₹11,860 · Round trip · Sep 24"})
+        self.assertEqual(result.extracted_data["answer"], "IndiGo · ₹11,860 · Round trip · Sep 24")
 
     async def test_answer_parts_match_despite_case_and_spacing(self):
         from models.goal_models import ObservedState
@@ -963,7 +1128,7 @@ class GoalLoopTests(unittest.IsolatedAsyncioTestCase):
 
         result, _ = await self._run([ObservedState(**page)], ["ACHIEVED"], answer_parts=["round trip", "Sep 24 – Oct 3"], extracted={})
 
-        self.assertEqual(result.extracted_data, {"answer": "round trip · Sep 24 – Oct 3"})
+        self.assertEqual(result.extracted_data["answer"], "round trip · Sep 24 – Oct 3")
 
 
 class RecoveryPolicyTests(unittest.TestCase):

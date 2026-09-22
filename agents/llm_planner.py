@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Optional
 
 from loguru import logger
@@ -8,10 +9,40 @@ from llm.llm_client import LLMClient
 from models.task_models import TaskPlan
 from sites.registry import SITE_POLICIES, policy_for, supports_comparison
 
-TASK_TYPES = {"search", "compare", "book"}
+TASK_TYPES = {"search", "compare", "extract", "book"}
 CONSTRAINT_KEYS = {"minimum_rating", "maximum_price", "condition"}
 # After this many answers, run with what is known rather than keep asking.
 MAX_QUESTIONS = 3
+
+
+MONTHS = (r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?"
+          r"|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?")
+# A travel date in the request or an answer: "23 October", "Oct 23", "23/10",
+# "tomorrow", "next Friday".
+DATE_GIVEN = re.compile(
+    rf"\b(?:\d{{1,2}}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:{MONTHS})\b|(?:{MONTHS})\s+\d{{1,2}}\b"
+    r"|\d{1,2}[/.-]\d{1,2}(?:[/.-]\d{2,4})?\b|today|tonight|tomorrow"
+    r"|(?:this|next)\s+(?:week|weekend|month|mon|tue|wed|thu|fri|sat|sun)\w*"
+    r"|(?:mon|tues|wednes|thurs|fri|satur|sun)day)",
+    re.IGNORECASE,
+)
+
+
+def _ask_for_missing_flight_date(plan: TaskPlan, query: str, answers: list[str]) -> TaskPlan:
+    """
+    A flight search without a date is asked for one, whichever planner made
+    the plan. The LLM usually asks, but when its call failed, or it left the
+    question out, the search ran without a date and Google Flights showed no
+    one flight to report.
+    """
+    if plan.needs_clarification or "google_flights" not in plan.candidate_sites:
+        return plan
+    if DATE_GIVEN.search(" ".join([query, *answers])):
+        return plan
+    return plan.model_copy(update={
+        "clarification_question": "What date do you want to fly? For a round trip, give the return date too.",
+        "clarification_options": [],
+    })
 
 
 def _system_prompt() -> str:
@@ -25,7 +56,7 @@ def _system_prompt() -> str:
 
     Read the user's request, and their answers to earlier questions if any, and return ONLY JSON:
     {{
-        "task_type": "search" | "compare" | "book",
+        "task_type": "search" | "compare" | "extract" | "book",
         "category": "product" | "flight" | "other",
         "sites": ["<approved site key>"],
         "unapproved_sites": ["<site the user named that is not listed>"],
@@ -35,6 +66,8 @@ def _system_prompt() -> str:
     }}
 
     task_type: "compare" when the user wants prices compared or the cheapest/best among products;
+    "extract" when they ask about something a list of search results (names, prices, ratings) does
+    not answer, e.g. a product's specifications, how many variants are listed, or what a page says;
     "book" only when they want to book or reserve; otherwise "search".
 
     sites: keys of the approved sites the user named or clearly means; [] if they named none.
@@ -82,8 +115,11 @@ class LLMTaskPlanner:
             logger.warning(f"LLM planner failed ({exc}); using the rule-based planner.")
             plan = None
         if plan is None:
-            return self.fallback.plan(query, "\n".join(answers) or None)
-        logger.info(f"LLM plan: {json.dumps(plan.model_dump(), ensure_ascii=False)}")
+            plan = self.fallback.plan(query, "\n".join(answers) or None)
+        else:
+            logger.info(f"LLM plan: {json.dumps(plan.model_dump(), ensure_ascii=False)}")
+        if len(answers) < MAX_QUESTIONS:
+            plan = _ask_for_missing_flight_date(plan, query, answers)
         return plan
 
     @staticmethod

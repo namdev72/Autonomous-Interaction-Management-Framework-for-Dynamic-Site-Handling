@@ -1,133 +1,30 @@
 import type { AgentEvent } from '../hooks/useAgent';
-import { ArrowRight, Check, X, Info, Zap, MessageCircleQuestion } from 'lucide-react';
-import { clsx } from 'clsx';
-import { twMerge } from 'tailwind-merge';
+import { describeEvent } from '../lib/present';
+import type { Tone } from '../lib/present';
+
+const DOT: Record<Tone, string> = {
+  plain: 'bg-faint',
+  good: 'bg-accent',
+  warn: 'bg-deal-bar',
+  bad: 'bg-danger',
+  ask: 'bg-deal',
+};
+
+function formatTime(isoString: string) {
+  const date = new Date(isoString);
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString([], { hour12: false });
+}
 
 export function ActivityEventDisplay({ event }: { event: AgentEvent }) {
-  const cn = (...inputs: (string | undefined | null | false)[]) => twMerge(clsx(inputs));
-
-  const formatTime = (isoString: string) => {
-    try {
-      const date = new Date(isoString);
-      return date.toLocaleTimeString([], { hour12: false });
-    } catch {
-      return '';
-    }
-  };
-
-  const getEventStyle = (type: string, data: any) => {
-    switch (type) {
-      case 'action':
-        return {
-          icon: <ArrowRight className="w-4 h-4 text-blue-400 mt-1" />,
-          color: 'text-blue-200',
-          bg: 'bg-blue-900/10 border-blue-900/50',
-          text: `Action: ${data?.action?.toUpperCase()} on ${data?.target || 'page'} -> ${data?.reasoning || ''}`
-        };
-      case 'extraction':
-        return {
-          icon: <Check className="w-4 h-4 text-green-400 mt-1" />,
-          color: 'text-green-200',
-          bg: 'bg-green-900/10 border-green-900/50',
-          text: data?.message || `Extracted: ${data?.value}`
-        };
-      case 'agent_completed':
-        if (data?.result && !data.result.completed) {
-          return {
-            icon: <X className="w-4 h-4 text-red-400 mt-1" />,
-            color: 'text-red-200',
-            bg: 'bg-red-900/10 border-red-900/50',
-            text: data.result.extracted_data?.answer || `Agent finished without completing the task (${data.result.reason}).`,
-          };
-        }
-        return {
-          icon: <Check className="w-4 h-4 text-green-400 mt-1" />,
-          color: 'text-green-200',
-          bg: 'bg-green-900/10 border-green-900/50',
-          text: data?.result?.extracted_data?.answer || 'Agent execution completed.',
-        };
-      case 'agent_started':
-        return {
-          icon: <Check className="w-4 h-4 text-green-400 mt-1" />,
-          color: 'text-green-200',
-          bg: 'bg-green-900/10 border-green-900/50',
-          text: data?.message || 'Agent execution starting...',
-        };
-      case 'user_input_required':
-        return {
-          icon: <MessageCircleQuestion className="w-4 h-4 text-amber-400 mt-1" />,
-          color: 'text-amber-200',
-          bg: 'bg-amber-900/10 border-amber-900/50',
-          text: `Question: ${data?.question || 'The agent needs more information.'}`,
-        };
-      case 'error':
-        return {
-          icon: <X className="w-4 h-4 text-red-400 mt-1" />,
-          color: 'text-red-200',
-          bg: 'bg-red-900/10 border-red-900/50',
-          text: data?.message || 'An error occurred'
-        };
-      case 'agent_stopped':
-        return {
-          icon: <X className="w-4 h-4 text-yellow-400 mt-1" />,
-          color: 'text-yellow-200',
-          bg: 'bg-yellow-900/10 border-yellow-900/50',
-          text: data?.message || 'Agent stopped.'
-        };
-      case 'log':
-        const level = data?.level?.toLowerCase() || 'info';
-        if (level === 'success') {
-          return {
-            icon: <Check className="w-4 h-4 text-green-400 mt-1" />,
-            color: 'text-green-200',
-            bg: 'bg-green-900/10 border-green-900/30',
-            text: data?.message
-          };
-        } else if (level === 'warning') {
-          return {
-            icon: <Zap className="w-4 h-4 text-yellow-400 mt-1" />,
-            color: 'text-yellow-200',
-            bg: 'bg-yellow-900/10 border-yellow-900/30',
-            text: data?.message
-          };
-        } else if (level === 'error') {
-          return {
-             icon: <X className="w-4 h-4 text-red-400 mt-1" />,
-             color: 'text-red-200',
-             bg: 'bg-red-900/10 border-red-900/30',
-             text: data?.message
-          }
-        }
-        return {
-          icon: <Info className="w-4 h-4 text-slate-400 mt-1" />,
-          color: 'text-slate-300',
-          bg: 'bg-transparent border-transparent',
-          text: data?.message
-        };
-      default:
-        return {
-          icon: <Info className="w-4 h-4 text-slate-400 mt-1" />,
-          color: 'text-slate-300',
-          bg: 'bg-transparent border-transparent',
-          text: JSON.stringify(data)
-        };
-    }
-  };
-
-  const data = event.data || {};
-  const style = getEventStyle(event.type, data);
-
+  const { text, detail, tone } = describeEvent(event);
   return (
-    <div className={cn("flex gap-3 p-3 rounded-lg border", style.bg, "transition-all duration-200")}>
-      <div className="flex-shrink-0 w-16 text-xs text-slate-500 font-mono pt-1">
-        [{formatTime(event.timestamp)}]
+    <li className="flex gap-3 px-4 py-1.5 text-sm">
+      <span className="w-16 shrink-0 pt-0.5 font-mono text-xs text-faint">{formatTime(event.timestamp)}</span>
+      <span className={`mt-2 h-1.5 w-1.5 shrink-0 rounded-full ${DOT[tone]}`} />
+      <div className="min-w-0 flex-1">
+        <p className={`break-words ${tone === 'bad' ? 'text-danger' : 'text-ink'}`}>{text}</p>
+        {detail && <p className="break-words text-muted">{detail}</p>}
       </div>
-      <div className="flex-shrink-0">
-        {style.icon}
-      </div>
-      <div className={cn("text-sm flex-1 leading-relaxed whitespace-pre-wrap font-mono", style.color)}>
-        {style.text}
-      </div>
-    </div>
+    </li>
   );
 }

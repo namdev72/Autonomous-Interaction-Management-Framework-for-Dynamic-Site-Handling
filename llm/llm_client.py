@@ -40,6 +40,30 @@ def rate_limit_wait(error: Exception):
     return 10.0
 
 
+def json_generation_failure(error: Exception):
+    """
+    The model's reply when Groq rejected it as not being JSON
+    (json_validate_failed), or None for any other error.
+    """
+    body = getattr(error, "body", None)
+    info = body.get("error", body) if isinstance(body, dict) else None
+    if isinstance(info, dict) and info.get("code") == "json_validate_failed":
+        return str(info.get("failed_generation") or "")
+    return None
+
+
+def _json_object_in(text: str):
+    """The JSON object inside a reply that wraps it in prose, or None."""
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        value = json.loads(text[start:end + 1])
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def configured_api_keys() -> list[str]:
     """GROQ_API_KEY, then GROQ_API_KEY_2, GROQ_API_KEY_3, ... in that order."""
     def order(name: str) -> int:
@@ -154,7 +178,10 @@ class LLMClient:
                     await asyncio.sleep(wait)
                     self._use_key(soonest)
                     continue
-                if attempt >= self.max_retries:
+                # At temperature 0 the same request gets the same prose back,
+                # so retrying it unchanged only adds delay; generate_json
+                # asks again with the rejected reply in view instead.
+                if attempt >= self.max_retries or json_generation_failure(e) is not None:
                     break
                 delay = min(2 ** (attempt - 1), 8)
                 logger.warning(f"LLM request failed on attempt {attempt}; retrying in {delay}s: {e}")
@@ -171,25 +198,41 @@ class LLMClient:
             logger.error("Cannot generate JSON because GROQ_API_KEY is not configured.")
             return {}
         
-        try:
-            response = await self._chat_completion_with_retry(
-                model=self.model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.0 # Deterministic actions
-            )
-            
-            content = response.choices[0].message.content
-            logger.debug(f"LLM Raw Output: {content}")
-            
-            # Parse the string content to dict
-            return json.loads(content)
-        except Exception as e:
-            logger.error(f"LLM request failed: {e}")
-            return {}
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        for attempt in range(2):
+            try:
+                response = await self._chat_completion_with_retry(
+                    model=self.model_name,
+                    messages=messages,
+                    response_format={"type": "json_object"},
+                    temperature=0.0 # Deterministic actions
+                )
+                content = response.choices[0].message.content
+                logger.debug(f"LLM Raw Output: {content}")
+                return json.loads(content)
+            except Exception as e:
+                failed = json_generation_failure(e)
+                if failed is None:
+                    logger.error(f"LLM request failed: {e}")
+                    return {}
+                recovered = _json_object_in(failed)
+                if recovered is not None:
+                    logger.warning("LLM wrapped its JSON in prose; using the JSON.")
+                    return recovered
+                if attempt == 1:
+                    logger.error(f"LLM replied in prose again instead of JSON: {failed[:200]}")
+                    return {}
+                # Show the model its own reply and ask for the JSON alone.
+                logger.warning("LLM replied in prose instead of JSON; asking once more for JSON only.")
+                messages = messages + [
+                    {"role": "assistant", "content": failed},
+                    {"role": "user", "content": "That reply was not JSON. Reply again with only the JSON "
+                                                "object, in the format the system message gives, and nothing else."},
+                ]
+        return {}
 
     async def generate_vision_json(self, image_path: str, prompt: str) -> dict:
         """

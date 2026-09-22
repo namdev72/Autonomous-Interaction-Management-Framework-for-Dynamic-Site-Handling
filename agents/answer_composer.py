@@ -19,7 +19,10 @@ def compose_comparison_answer(task: TaskPlan, results: list[SiteRunResult]) -> d
     ]
     ranked = _by_price(filtered or offers)
     warnings = [warning for result in results for warning in result.warnings]
-    if not priced:
+    listed = sum(len(result.offers) for result in results)
+    if not priced and listed:
+        answer = f"I found {listed} matching product(s), but the site showed no prices for them."
+    elif not priced:
         answer = "I could not find public offers matching the request."
     elif not offers:
         answer = f"I found {len(unavailable)} offer(s), but none can be bought right now."
@@ -49,6 +52,9 @@ def compose_comparison_answer(task: TaskPlan, results: list[SiteRunResult]) -> d
         # Unavailable offers are still shown, after the ranked ones and
         # labelled, rather than silently dropped.
         "offers": [offer.model_dump() for offer in ranked + unavailable],
+        # Whether the ranked offers met the constraints. When none did, they
+        # are listed anyway, so the first one is not a lowest matching price.
+        "matched": bool(filtered),
         "sites": [result.model_dump() for result in results],
         "warnings": warnings,
     }

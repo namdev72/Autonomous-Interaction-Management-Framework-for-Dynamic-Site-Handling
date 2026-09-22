@@ -23,7 +23,13 @@ class TaskRouter:
             return LLMStrategy(query=user_query)
 
         actual_sites = classify_sites(user_query)
-        if not actual_sites:
+        # A flight needs no site named: Google Flights is the only approved
+        # flight site, so the planner's choice is the user's. Without this,
+        # "find flights from Pune to Goa" started on the bare Google Flights
+        # home page instead of its search. Other unnamed sites are planner
+        # defaults (Amazon India for anything) and are not trusted.
+        planned_flight = any("flight_search" in policy_for(key).capabilities for key in plan.preferred_sites)
+        if not actual_sites and not planned_flight:
             logger.info("[Agent] No explicitly approved website detected in query. Falling back to LLM.")
             return LLMStrategy(query=user_query)
 
@@ -44,7 +50,7 @@ class TaskRouter:
         if search_query and "flight_search" in policy.capabilities and not TRIP_TYPE_GIVEN.search(f"{user_query} {search_query}"):
             search_query = f"{search_query} one way"
 
-        if plan.task_type in ["search", "compare"] and search_query:
+        if plan.task_type in ["search", "compare", "extract"] and search_query:
             logger.info(f"[Agent] {plan.task_type.title()} intent detected for query: '{search_query}'")
             direct_url = policy.build_search_url(search_query)
             logger.info("[Agent] Direct URL strategy available")
