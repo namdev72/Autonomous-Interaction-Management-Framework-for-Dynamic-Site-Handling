@@ -14,7 +14,7 @@ A request goes through three stages.
 
 **Planning.** An LLM reads the request and works out what is being asked: a search, a price comparison or a booking, which site to use, what to search for, and any constraints such as a budget or minimum rating. Code then checks the plan against a registry of approved sites. If something essential is missing, such as travel dates or which Amazon region to use, the agent asks the user before it starts.
 
-**Execution.** Price comparisons go to site-specific extractors, which read product listings from each site and normalise them into one format for ranking. Everything else goes to a general browsing agent that runs in a loop. On each step, it reads the current page, checks whether the goal has been met, and if not, decides the next action: a click, typing, scrolling or extracting text.
+**Execution.** Product searches and price comparisons go to site-specific extractors, which read product listings from each site and normalise them into one format for ranking. Everything else goes to a general browsing agent that runs in a loop: questions a list of results cannot answer, such as a product's specifications, as well as flights and other browsing. On each step, the agent reads the current page, checks whether the goal has been met, and if not, decides the next action: a click, typing, scrolling or extracting text.
 
 **Verification.** A separate check, not the step that acts, decides when the task is done. It compares the page against requirements derived from the original request. When it rejects a result, it says what is still missing, and the agent uses that to decide its next step. Answers are built only from text that appears on the page.
 
@@ -24,7 +24,7 @@ React UI ── WebSocket ── FastAPI server
                       LLM task planner ── asks the user when information is missing
                             │
               ┌─────────────┴─────────────┐
-     comparison extractors         browsing agent loop
+      product extractors           browsing agent loop
      (Amazon, Flipkart)            observe → verify → plan → act
                                           │
                                    Playwright browser
@@ -43,6 +43,8 @@ React UI ── WebSocket ── FastAPI server
 
 **Cost awareness.** Every step uses LLM tokens, so prompts are kept small, unchanged pages are not re-checked, and multiple API keys can be rotated when one hits its rate limit.
 
+**Expect the LLM to misbehave.** A model that answers in prose where JSON was asked for, or does not answer at all, is treated as a normal condition rather than a crash: the JSON is recovered from the reply where possible, the model is asked once more otherwise, and a run whose LLM calls keep failing stops and says so instead of looping. Time spent waiting on the LLM does not count as the agent failing to make progress.
+
 ## Tech stack
 
 Python, Playwright, FastAPI, React with Vite, Groq-hosted LLMs (Qwen), ChromaDB and SQLite.
@@ -50,7 +52,7 @@ Python, Playwright, FastAPI, React with Vite, Groq-hosted LLMs (Qwen), ChromaDB 
 ## Status
 
 Working end to end:
-- product comparison on Amazon India and Flipkart;
+- product search and comparison on Amazon (India and US) and Flipkart;
 - flight search on Google Flights;
 - general browsing tasks on approved sites;
 - clarification questions in the UI.
@@ -97,7 +99,7 @@ Run the unit tests from the project root with `python -m pytest`. The tests are 
 ```text
 agents/     planning, goal verification and the agent loop
 browser/    Playwright control and page reading
-sites/      approved-site registry and comparison extractors
+sites/      approved-site registry and product extractors
 router/     how a task starts: search URL, site home page, or LLM-led
 memory/     vector memory (ChromaDB) and navigation graph (SQLite)
 llm/        LLM client with key rotation
